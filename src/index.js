@@ -257,6 +257,7 @@ if (useTui) {
     },
   });
   rerender = broadcast;
+  if (token) state.remoteUrl = url; // dashboard offers a scannable QR for this
   console.log(`skylla dashboard: ${url}`);
   const srcDir = dirname(fileURLToPath(import.meta.url));
   try {

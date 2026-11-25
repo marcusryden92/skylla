@@ -200,6 +200,16 @@
   #modal-box select:hover, #modal-box button:hover { border-color: #58a6ff; }
   #modal-row { display: flex; gap: 8px; justify-content: flex-end; }
 
+  /* --- remote QR --- */
+  #qrmodal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 100; }
+  #qrmodal[hidden] { display: none; }
+  #qr-box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px; display: flex; flex-direction: column; align-items: center; gap: 10px;
+  }
+  #qr-box .dim { color: var(--dim); font-size: 12px; }
+  #qr-img { background: #fff; padding: 14px; border-radius: 8px; line-height: 0; }
+
   /* --- runs browser --- */
   #runsmodal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 100; }
   #runsmodal[hidden] { display: none; }
@@ -506,6 +516,7 @@
     <button id="open-folder" hidden>Open Folder</button>
     <button id="shell-btn" title="toggle the shared shell console tile">Shell</button>
     <button id="resume-btn" title="resume this folder's latest run in a new window">Resume</button>
+    <button id="qr-btn" hidden title="scan with your phone to open the dashboard">QR</button>
     <span class="lbl">orch</span>
     <select id="orch-model">
       <option value="haiku">haiku</option>
@@ -553,6 +564,13 @@
         <button id="modal-here">This Window</button>
         <button id="modal-new">New Window</button>
       </div>
+    </div>
+  </div>
+  <div id="qrmodal" hidden>
+    <div id="qr-box">
+      <div id="qr-img"></div>
+      <div class="dim" id="qr-url"></div>
+      <div class="dim">scan on the same network · Esc to close</div>
     </div>
   </div>
   <div id="runsmodal" hidden>
@@ -1018,6 +1036,7 @@ function render(s) {
     const worst = Math.max(pu.session ?? 0, pu.weekly ?? 0, ...(pu.scoped ?? []).map(x => x.percent));
     el.style.color = worst >= 90 ? '#f87171' : worst >= 70 ? '#facc15' : '';
   }
+  qrBtn.hidden = !s.remoteUrl;
   const sel = document.getElementById('orch-model');
   if (document.activeElement !== sel && s.orchestrator?.label && sel.querySelector(`option[value="${s.orchestrator.label}"]`)) {
     sel.value = s.orchestrator.label;
@@ -1174,6 +1193,30 @@ function doOpen(mode) {
   modal.hidden = true;
 }
 document.getElementById('modal-new').addEventListener('click', () => doOpen('new'));
+// --- remote QR: scan the dashboard URL with a phone ---
+const qrModal = document.getElementById('qrmodal');
+const qrBtn = document.getElementById('qr-btn');
+let qrLibLoading = null;
+qrBtn.addEventListener('click', async () => {
+  if (!lastState?.remoteUrl) return;
+  if (typeof qrcode === 'undefined') {
+    qrLibLoading ??= new Promise(ok => {
+      const s = document.createElement('script');
+      s.src = api('/qrlib.js');
+      s.onload = ok;
+      document.head.appendChild(s);
+    });
+    await qrLibLoading;
+  }
+  const qr = qrcode(0, 'M');
+  qr.addData(lastState.remoteUrl);
+  qr.make();
+  document.getElementById('qr-img').innerHTML = qr.createSvgTag({ cellSize: 6, margin: 0 });
+  document.getElementById('qr-url').textContent = lastState.remoteUrl;
+  qrModal.hidden = false;
+});
+qrModal.addEventListener('click', () => { qrModal.hidden = true; });
+
 // --- runs browser: pick any run of a folder to resume (new window) ---
 const runsModal = document.getElementById('runsmodal');
 document.getElementById('runs-cancel').addEventListener('click', () => { runsModal.hidden = true; });
@@ -1339,6 +1382,7 @@ function notifyTransitions(s, totalCost) {
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   if (!viewer.hidden) { viewer.hidden = true; return; }
+  if (!qrModal.hidden) { qrModal.hidden = true; return; }
   if (!runsModal.hidden) { runsModal.hidden = true; return; }
   if (!modal.hidden) { modal.hidden = true; return; }
   if (maximized) { maximized = null; applyMax(); }

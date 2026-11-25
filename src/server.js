@@ -4,7 +4,10 @@ import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { resolvePricing, multiplier } from './pricing.js';
+
+const requireCjs = createRequire(import.meta.url);
 
 function serializeWorker(w) {
   if (!w) return null;
@@ -42,6 +45,7 @@ function snapshot(state) {
     pendingPlan: state.pendingPlan ?? null,
     planApproved: !!state.planApproved,
     shellLog: (state.shellLog ?? []).slice(-100),
+    remoteUrl: state.remoteUrl ?? null,
   };
 }
 
@@ -89,6 +93,9 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
         try { onLayout?.(JSON.parse(body).tree ?? null); } catch { /* ignore */ }
         res.writeHead(204).end();
       });
+    } else if (u.pathname === '/qrlib.js') {
+      res.writeHead(200, { 'content-type': 'application/javascript' })
+        .end(readFileSync(requireCjs.resolve('qrcode-generator')));
     } else if (u.pathname === '/manifest.json') {
       // PWA: Add to Home Screen on a phone -> standalone window, no browser chrome
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
