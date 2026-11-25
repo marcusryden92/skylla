@@ -35,6 +35,24 @@ for (let i = 0; i < argv.length; i++) {
 }
 
 // --- run dir + manifest ---
+// `skylla runs`: list resumable runs (one line per run; workers are restored implicitly)
+if (task === 'runs') {
+  const runsDir = join(cwd, '.skylla', 'runs');
+  const list = existsSync(runsDir)
+    ? readdirSync(runsDir).filter(d => existsSync(join(runsDir, d, 'manifest.json'))).sort()
+    : [];
+  if (!list.length) { console.log(`no runs in ${runsDir}`); process.exit(0); }
+  for (const id of list) {
+    try {
+      const m = JSON.parse(readFileSync(join(runsDir, id, 'manifest.json'), 'utf8'));
+      const live = (m.workers ?? []).filter(w => !w.retired).length;
+      const orchModelShort = (m.orchestrator?.model ?? '?').replace('claude-', '').replace(/-[0-9].*$/, '');
+      console.log(`${id}  ${(m.totalCost ?? 0).toFixed(2)}eq  orch:${orchModelShort}  workers:${live}${id === list.at(-1) ? '  <- latest (default for resume)' : ''}`);
+    } catch { console.log(`${id}  (unreadable manifest)`); }
+  }
+  process.exit(0);
+}
+
 let runId, runDir, loadedManifest = null;
 if (resumeMode) {
   const runsDir = join(cwd, '.skylla', 'runs');
@@ -213,7 +231,8 @@ function handleUserInput(text) {
     target.pushLine(`[skylla] ${target.name}: ${target.model} · gen ${target.generation} · ctx ${target.contextPct}% · $${target.cost.toFixed(2)} · ${target.status} · session ${target.sessionIds.at(-1)?.slice(0, 8) ?? '-'}`);
     return rerender();
   }
-  const rc = text.match(/^\/recycle(?:\s+(\S+))?\s*$/); // controlled compaction: handoff -> fresh context, optionally on another model
+  // controlled compaction: handoff -> fresh context, optionally on another model. /pipe = alias.
+  const rc = text.match(/^\/(?:recycle|pipe)(?:\s+(\S+))?\s*$/);
   if (rc) {
     // /recycle fable == /model fable; same-model /recycle falls through to a plain refresh
     if (rc[1] && resolvePricingLabel(target.model) !== rc[1].toLowerCase())
