@@ -213,7 +213,11 @@ function handleUserInput(text) {
     target.pushLine(`[skylla] ${target.name}: ${target.model} · gen ${target.generation} · ctx ${target.contextPct}% · $${target.cost.toFixed(2)} · ${target.status} · session ${target.sessionIds.at(-1)?.slice(0, 8) ?? '-'}`);
     return rerender();
   }
-  if (/^\/recycle\s*$/.test(text)) { // controlled compaction: handoff file -> fresh context
+  const rc = text.match(/^\/recycle(?:\s+(\S+))?\s*$/); // controlled compaction: handoff -> fresh context, optionally on another model
+  if (rc) {
+    // /recycle fable == /model fable; same-model /recycle falls through to a plain refresh
+    if (rc[1] && resolvePricingLabel(target.model) !== rc[1].toLowerCase())
+      return swapModel(target, rc[1].toLowerCase());
     if (target === state.orchestrator) escalateOrch('user requested recycle', currentOrchModel());
     else if (target.proc) { target.pushLine('[skylla] manual recycle via handoff'); requestHandoff(target); }
     else { target.pushLine('[skylla] not running - nothing to recycle'); rerender(); }
