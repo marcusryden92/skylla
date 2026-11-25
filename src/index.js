@@ -1,0 +1,388 @@
+#!/usr/bin/env node
+import { mkdirSync, writeFileSync, appendFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { Worker, COLORS } from './worker.js';
+import { App } from './ui.js';
+import { ORCHESTRATOR_PROMPT, WORKER_PROMPT, MODEL_ALIASES, parseDirectives } from './orchestrator.js';
+
+// --- args ---
+const argv = process.argv.slice(2);
+let cwd = process.cwd();
+let task = null;
+let budget = 10.0;
+let orchModel = 'auto';   // auto = escalation ladder; or pin with --orch-model
+const ORCH_LADDER = ['sonnet', 'opus', 'fable'];
+let orchRung = 0;
+let recycleAt = 50;
+let resumeMode = false;
+let resumeRunId = null;
+let useTui = false;
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '-C') cwd = resolve(argv[++i]);
+  else if (argv[i] === '--budget') budget = parseFloat(argv[++i]);
+  else if (argv[i] === '--orch-model') orchModel = argv[++i];
+  else if (argv[i] === '--recycle-at') recycleAt = parseInt(argv[++i], 10);
+  else if (argv[i] === '--tui') useTui = true;
+  else if (argv[i] === 'resume' && !resumeMode && !task) resumeMode = true;
+  else if (resumeMode && !resumeRunId) resumeRunId = argv[i];
+  else if (!task) task = argv[i];
+}
+
+// --- run dir + manifest ---
+let runId, runDir, loadedManifest = null;
+if (resumeMode) {
+  const runsDir = join(cwd, '.skylla', 'runs');
+  const runs = existsSync(runsDir)
+    ? readdirSync(runsDir).filter(d => existsSync(join(runsDir, d, 'manifest.json'))).sort()
+    : [];
+  runId = resumeRunId ?? runs.at(-1);
+  if (!runId || !existsSync(join(runsDir, runId, 'manifest.json'))) {
+    console.error(resumeRunId ? `skylla: run "${resumeRunId}" not found in ${runsDir}` : `skylla: no runs to resume in ${runsDir}`);
+    process.exit(1);
+  }
+  runDir = join(runsDir, runId);
+  loadedManifest = JSON.parse(readFileSync(join(runDir, 'manifest.json'), 'utf8'));
+  budget = loadedManifest.budget ?? budget;
+} else {
+  runId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  runDir = join(cwd, '.skylla', 'runs', runId);
+}
+mkdirSync(join(runDir, 'handoffs'), { recursive: true });
+
+const state = {
+  cwd, runDir,
+  orchestrator: null,
+  workers: [],
+  retired: [],   // killed workers: panel removed, cost + manifest record kept
+  budget,
+  maxWorkers: 18,
+  perWorkerBudget: budget / 2,
+  recycleAtPct: recycleAt,
+  done: false,
+  weekUsd: 0,
+};
+
+// --- weekly usage tally (API-equivalent $, persisted across runs, ISO-week reset) ---
+const usageFile = join(homedir(), '.skylla-usage.json');
+const isoWeek = () => {
+  const d = new Date();
+  const jan1 = new Date(d.getFullYear(), 0, 1);
+  return `${d.getFullYear()}-W${Math.ceil(((d - jan1) / 86400000 + jan1.getDay() + 1) / 7)}`;
+};
+let lastTotalForWeekly = 0;
+function bumpWeekly(total) {
+  let data = { week: isoWeek(), usd: 0 };
+  try { const f = JSON.parse(readFileSync(usageFile, 'utf8')); if (f.week === data.week) data = f; } catch { /* fresh week */ }
+  data.usd += total - lastTotalForWeekly;
+  lastTotalForWeekly = total;
+  writeFileSync(usageFile, JSON.stringify(data));
+  state.weekUsd = data.usd;
+}
+
+const totalCost = () =>
+  state.workers.reduce((s, w) => s + w.cost, 0) +
+  state.retired.reduce((s, r) => s + (r.cost ?? 0), 0) +
+  (state.orchestrator?.cost ?? 0);
+
+function saveManifest() {
+  bumpWeekly(totalCost());
+  writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
+    runId, cwd, budget: state.budget, totalCost: totalCost(),
+    orchestrator: state.orchestrator && {
+      sessions: state.orchestrator.sessionIds, model: state.orchestrator.model, cost: state.orchestrator.cost,
+    },
+    workers: [
+      ...state.workers.map(w => ({
+        name: w.name, model: w.model, color: w.color, status: w.status,
+        cost: w.cost, sessions: w.sessionIds, generation: w.generation,
+      })),
+      ...state.retired,
+    ],
+  }, null, 2));
+}
+
+// --- UI: Electron window (default) or terminal via --tui ---
+let rerender = () => {};
+if (useTui) {
+  const React = (await import('react')).default;
+  const { render } = await import('ink');
+  const { App } = await import('./ui.js');
+  const app = render(React.createElement(App, { state, onSubmit: handleUserInput }));
+  rerender = () => app.rerender(React.createElement(App, { state, onSubmit: handleUserInput }));
+} else {
+  const { startServer } = await import('./server.js');
+  const { broadcast, url } = await startServer({
+    state,
+    onInput: handleUserInput,
+    // "open folder" = launch a fresh skylla instance in that project dir (own window, own run)
+    onOpenFolder: dir => {
+      spawn(process.execPath, [fileURLToPath(import.meta.url), '-C', dir, '--orch-model', orchModel],
+        { detached: true, stdio: 'ignore' }).unref();
+    },
+  });
+  rerender = broadcast;
+  console.log(`skylla dashboard: ${url}`);
+  const srcDir = dirname(fileURLToPath(import.meta.url));
+  try {
+    const electronBin = (await import('electron')).default; // path to electron.exe
+    // NOTE: no windowsHide here - it makes the Electron window start invisible
+    spawn(electronBin, [join(srcDir, 'electron-main.cjs'), url], { stdio: 'ignore', detached: true }).unref();
+  } catch {
+    // electron not installed -> plain browser tab
+    spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  }
+}
+setInterval(rerender, 1000).unref();
+
+function sysToOrch(text) {
+  // feed enforcement feedback back to the orchestrator
+  state.orchestrator?.send(`[system] ${text}`);
+}
+
+// "@w1 msg" or "@<session-id prefix> msg" routes to that worker; default orchestrator.
+// "/model <alias>" (routable with @) swaps that session's model via handoff-recycle.
+function handleUserInput(text) {
+  text = text.trim();
+  if (!text) return;
+  let target = state.orchestrator;
+  const m = text.match(/^@(\S+)\s+([\s\S]+)/);
+  if (m) {
+    const tok = m[1].toLowerCase();
+    target = [state.orchestrator, ...state.workers].find(w =>
+      w && (w.name.toLowerCase() === tok || w.sessionIds.some(id => id.toLowerCase().startsWith(tok))));
+    if (!target) {
+      state.orchestrator?.pushLine(`[skylla] no worker matching @${m[1]} - sent nowhere`);
+      return rerender();
+    }
+    text = m[2];
+  }
+  const mm = text.match(/^\/model\s+(\S+)\s*$/);
+  if (mm) return swapModel(target, mm[1].toLowerCase());
+  target?.send(text);
+}
+
+function swapModel(target, alias) {
+  if (!target) return;
+  if (!MODEL_ALIASES[alias]) {
+    target.pushLine(`[skylla] unknown model "${alias}" - use haiku | sonnet | opus | fable`);
+    return rerender();
+  }
+  if (target === state.orchestrator) return escalateOrch(`user requested ${alias}`, alias);
+  if (resolvePricingLabel(target.model) === alias) {
+    target.pushLine(`[skylla] already on ${alias}`);
+    return rerender();
+  }
+  if (!target.proc) { // session not live: just retarget the next generation
+    target.model = MODEL_ALIASES[alias];
+    target.pushLine(`[skylla] model set to ${alias} for next start`);
+    return rerender();
+  }
+  target.swapTo = alias;
+  target.pushLine(`[skylla] swapping to ${alias} via handoff`);
+  requestHandoff(target);
+}
+
+const resolvePricingLabel = model =>
+  Object.entries(MODEL_ALIASES).find(([, id]) => model?.startsWith(id))?.[0];
+
+function retireWorker(w) {
+  state.retired.push({
+    name: w.name, model: w.model, color: w.color, status: 'killed',
+    cost: w.cost, sessions: w.sessionIds, generation: w.generation, retired: true,
+  });
+  state.workers = state.workers.filter(x => x !== w);
+  saveManifest();
+  rerender();
+}
+
+// --- worker lifecycle ---
+function spawnWorker({ name, model, prompt }) {
+  if (state.workers.some(w => w.name === name)) return sysToOrch(`SPAWN rejected: ${name} already exists. Use @@SEND.`);
+  if (state.workers.filter(w => w.proc).length >= state.maxWorkers)
+    return sysToOrch(`SPAWN rejected: worker cap (${state.maxWorkers}) reached.`);
+  if (totalCost() >= state.budget)
+    return sysToOrch(`SPAWN rejected: global budget $${state.budget} exhausted.`);
+
+  const w = new Worker({
+    name,
+    model: MODEL_ALIASES[model] ?? model,
+    cwd,
+    color: COLORS[state.workers.length % COLORS.length],
+    systemPrompt: WORKER_PROMPT,
+  });
+  wireWorker(w);
+  state.workers.push(w);
+  w.start(prompt);
+  saveManifest();
+}
+
+function wireWorker(w) {
+  w.on('update', rerender);
+  w.on('text', text => {
+    if (text.includes('===HANDOFF_DONE===')) return recycleNow(w);
+    if (text.includes('===TASK_DONE===')) {
+      if (w.recyclePending) return requestHandoff(w);
+      w.lastReport = text.replace('===TASK_DONE===', '').trim().slice(-1500);
+      state.orchestrator?.send(`[${w.name} report] done (cost $${w.cost.toFixed(2)}):\n${w.lastReport}`);
+    }
+  });
+  w.on('result', () => {
+    saveManifest();
+    // budget + context guardrails, checked at turn boundaries
+    if (w.cost >= state.perWorkerBudget) {
+      sysToOrch(`${w.name} exceeded per-worker budget ($${w.cost.toFixed(2)}). It was paused; decide: @@SEND to continue deliberately, or @@KILL.`);
+    }
+    if (w.contextPct >= state.recycleAtPct && !w.recyclePending) {
+      w.recyclePending = true; // recycled at next ===TASK_DONE===, not mid-flight
+      w.pushLine(`[skylla] ctx ${w.contextPct}% - recycle pending at next task boundary`);
+    }
+    if (totalCost() >= state.budget) {
+      sysToOrch(`GLOBAL BUDGET $${state.budget} REACHED. No new spawns possible. Wrap up with @@DONE.`);
+    }
+  });
+  w.on('exit', () => { rerender(); saveManifest(); });
+}
+
+function requestHandoff(w) {
+  const file = join(runDir, 'handoffs', `${w.name}-gen${w.generation}.md`);
+  w.handoffFile = file;
+  w.send(`Before your context is recycled, write a handoff file to "${file}" containing: the goal, decisions made so far, current state, and concrete next steps. Then reply with exactly ===HANDOFF_DONE===`);
+}
+
+function recycleNow(w) {
+  w.pushLine(`[skylla] recycling (gen ${w.generation} -> ${w.generation + 1})`);
+  w.recyclePending = false;
+  const handoff = w.handoffFile;
+  w.kill();
+  w.once('exit', () => {
+    w.contextTokens = 0;
+    if (w.swapTo) { w.model = MODEL_ALIASES[w.swapTo]; w.swapTo = null; }
+    w.start(`You are resuming a task from a previous session. Read your handoff file at "${handoff}" and continue the work from there.`);
+  });
+}
+
+// --- orchestrator ---
+const currentOrchModel = () => orchModel === 'auto' ? ORCH_LADDER[orchRung] : orchModel;
+
+// targetAlias: explicit model to swap to (user request); otherwise climb the auto ladder.
+function escalateOrch(reason, targetAlias) {
+  const o = state.orchestrator;
+  if (!o || o.escalating) return;
+  let next = null;
+  if (targetAlias) {
+    next = targetAlias;
+    if (orchModel === 'auto') {
+      const r = ORCH_LADDER.indexOf(targetAlias);
+      if (r >= 0) orchRung = r;
+    } else {
+      orchModel = targetAlias; // pinned: stay pinned to the new choice
+    }
+  } else {
+    const canClimb = orchModel === 'auto' && orchRung < ORCH_LADDER.length - 1;
+    if (canClimb) { orchRung += 1; next = ORCH_LADDER[orchRung]; }
+    // else: same model, fresh context (plain recycle)
+  }
+  o.escalating = true;
+  o.pendingModel = next;
+  const file = join(runDir, 'handoffs', `orch-gen${o.generation}.md`);
+  o.handoffFile = file;
+  o.pushLine(`[skylla] ${next ? `switching to ${next}` : 'recycling'}: ${reason}`);
+  o.send(`[system] You are being ${next ? `replaced by another model (${next})` : 'recycled with fresh context'}: ${reason}. Write a complete orchestrator handoff to "${file}": the user's task, overall plan and progress, every worker (name, model, assignment, status), budget spent, and concrete next steps. Then reply with exactly ===HANDOFF_DONE===`);
+}
+
+function buildOrchestrator(model) {
+  const o = new Worker({
+    name: 'orch',
+    model,
+    cwd,
+    color: 'white',
+    systemPrompt: ORCHESTRATOR_PROMPT + `\nHard caps: max ${state.maxWorkers} workers, global budget $${state.budget}, per-worker budget $${state.perWorkerBudget}.`,
+  });
+  o.on('update', rerender);
+  o.on('text', text => {
+    appendFileSync(join(runDir, 'orch.log'), text + '\n---\n');
+    if (text.includes('===HANDOFF_DONE===') && o.escalating) {
+      const handoff = o.handoffFile;
+      o.kill();
+      o.once('exit', () => {
+        o.escalating = false;
+        o.contextTokens = 0;
+        const target = o.pendingModel ?? currentOrchModel();
+        o.pendingModel = null;
+        o.model = MODEL_ALIASES[target] ?? target;
+        o.start(`You are taking over as SKYLLA orchestrator mid-run. Read your predecessor's handoff at "${handoff}" and continue managing the run from there.`);
+        saveManifest();
+      });
+      return;
+    }
+    for (const d of parseDirectives(text)) {
+      if (d.kind === 'SPAWN') spawnWorker(d);
+      else if (d.kind === 'SEND') {
+        const w = state.workers.find(x => x.name === d.name);
+        w ? w.send(d.prompt) : sysToOrch(`SEND rejected: no worker named ${d.name}.`);
+      } else if (d.kind === 'KILL') {
+        const w = state.workers.find(x => x.name === d.name);
+        if (w) {
+          if (w.proc) { w.once('exit', () => retireWorker(w)); w.kill(); }
+          else retireWorker(w);
+        }
+      } else if (d.kind === 'DONE') {
+        state.done = true;
+        saveManifest();
+      } else if (d.kind === 'ESCALATE') {
+        escalateOrch(`self-reported: ${d.reason ?? 'unspecified'}`);
+      } else {
+        sysToOrch(`Could not parse directive: ${d.raw}`);
+      }
+    }
+  });
+  o.on('result', () => {
+    saveManifest();
+    // code-side escalation trigger: context pressure the model can't be trusted to notice
+    if (o.contextPct >= state.recycleAtPct && !o.escalating) escalateOrch(`context at ${o.contextPct}%`);
+  });
+  state.orchestrator = o;
+  return o;
+}
+
+function startOrchestrator() {
+  const o = buildOrchestrator(MODEL_ALIASES[currentOrchModel()] ?? currentOrchModel());
+  o.start(task ?? 'No initial task given. Greet the user briefly and wait for instructions.');
+}
+
+function resumeRun(m) {
+  // restore the auto-ladder rung from the model the orchestrator had reached
+  if (orchModel === 'auto' && m.orchestrator?.model) {
+    const alias = Object.entries(MODEL_ALIASES).find(([, id]) => m.orchestrator.model.startsWith(id))?.[0];
+    const rung = ORCH_LADDER.indexOf(alias);
+    if (rung >= 0) orchRung = rung;
+  }
+  // reattach workers idle: their sessions remember everything, but the
+  // orchestrator decides who actually continues (no uncontrolled restart burst)
+  for (const mw of m.workers ?? []) {
+    if (mw.retired) { state.retired.push(mw); continue; } // keep cost, no panel
+    const w = new Worker({ name: mw.name, model: mw.model, cwd, color: mw.color, systemPrompt: WORKER_PROMPT });
+    w.cost = mw.cost ?? 0;
+    w.generation = mw.generation ?? 1;
+    w.sessionIds = mw.sessions ?? [];
+    wireWorker(w);
+    state.workers.push(w);
+    try { w.resume(); }
+    catch (e) { w.status = 'error'; w.pushLine(`[skylla] resume failed: ${e.message}`); }
+  }
+  const o = buildOrchestrator(m.orchestrator?.model ?? (MODEL_ALIASES[currentOrchModel()] ?? currentOrchModel()));
+  o.cost = m.orchestrator?.cost ?? 0;
+  o.sessionIds = m.orchestrator?.sessions ?? [];
+  o.generation = o.sessionIds.length;
+  lastTotalForWeekly = totalCost(); // rehydrated spend is already in the weekly tally
+  if (o.sessionIds.length) {
+    o.resume('[system] skylla was restarted and this run resumed. Workers are reattached but idle; any that died mid-task did not finish. Re-sync: review state, @@SEND continuation prompts to workers that should proceed, respawn from handoffs if a session is broken, or wrap up.');
+  } else {
+    startOrchestrator();
+  }
+}
+
+loadedManifest ? resumeRun(loadedManifest) : startOrchestrator();

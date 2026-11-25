@@ -1,0 +1,14 @@
+{
+  "runId": "2026-11-25T00-26-33",
+  "cwd": "C:\\Users\\Marcus\\skylla\\test-sandbox",
+  "budget": 2,
+  "totalCost": 0.01350835,
+  "orchestrator": {
+    "sessions": [
+      "4afc6da7-822e-4b68-bb5f-d15763f33294"
+    ],
+    "model": "claude-haiku-4-5",
+    "cost": 0.01350835
+  },
+  "workers": []
+}

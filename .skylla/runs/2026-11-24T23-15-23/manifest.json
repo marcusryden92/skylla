@@ -1,0 +1,18 @@
+{
+  "runId": "2026-11-24T23-15-23",
+  "cwd": "C:\\Users\\Marcus\\skylla",
+  "budget": 10,
+  "workers": [
+    {
+      "name": "w1",
+      "model": "claude-haiku-4-5",
+      "color": "cyan",
+      "status": "running",
+      "cost": 0,
+      "sessions": [
+        "591d23ea-9873-4014-8bce-a3191d74238f"
+      ],
+      "generation": 1
+    }
+  ]
+}

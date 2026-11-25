@@ -1,0 +1,14 @@
+{
+  "runId": "2026-11-25T01-09-54",
+  "cwd": "C:\\Users\\Marcus\\skylla",
+  "budget": 10,
+  "totalCost": 0.00408,
+  "orchestrator": {
+    "sessions": [
+      "2c7f7545-7eea-4d73-8b47-b055b9d0b320"
+    ],
+    "model": "claude-sonnet-4-6",
+    "cost": 0.00408
+  },
+  "workers": []
+}
