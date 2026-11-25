@@ -516,6 +516,7 @@
     <button id="open-folder" hidden>Open Folder</button>
     <button id="shell-btn" title="toggle the shared shell console tile">Shell</button>
     <button id="resume-btn" title="resume this folder's latest run in a new window">Resume</button>
+    <button id="remote-btn" title="expose this dashboard over the internet (cloudflared tunnel)">Remote</button>
     <button id="qr-btn" hidden title="scan with your phone to open the dashboard">QR</button>
     <span class="lbl">orch</span>
     <select id="orch-model">
@@ -1037,6 +1038,7 @@ function render(s) {
     el.style.color = worst >= 90 ? '#f87171' : worst >= 70 ? '#facc15' : '';
   }
   qrBtn.hidden = !s.remoteUrl;
+  remoteBtn.hidden = !!s.remoteUrl;
   const sel = document.getElementById('orch-model');
   if (document.activeElement !== sel && s.orchestrator?.label && sel.querySelector(`option[value="${s.orchestrator.label}"]`)) {
     sel.value = s.orchestrator.label;
@@ -1193,6 +1195,13 @@ function doOpen(mode) {
   modal.hidden = true;
 }
 document.getElementById('modal-new').addEventListener('click', () => doOpen('new'));
+// Remote button: start the tunnel mid-run; QR takes over once the URL exists
+const remoteBtn = document.getElementById('remote-btn');
+remoteBtn.addEventListener('click', async () => {
+  const r = await (await fetch(api('/remote'), { method: 'POST' })).json();
+  if (!r.ok) alert(r.text);
+});
+
 // --- remote QR: scan the dashboard URL with a phone ---
 const qrModal = document.getElementById('qrmodal');
 const qrBtn = document.getElementById('qr-btn');

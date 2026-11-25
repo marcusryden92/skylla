@@ -49,14 +49,15 @@ function snapshot(state) {
   };
 }
 
-export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, onDiff, onMerge, onDiscard, onTranscript, onListRuns, host = '127.0.0.1', port = 0, token = null }) {
+export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, onDiff, onMerge, onDiscard, onTranscript, onListRuns, onRemote, host = '127.0.0.1', port = 0, token = null }) {
   const htmlPath = join(dirname(fileURLToPath(import.meta.url)), 'web', 'index.html');
   const clients = new Set();
 
   const srv = createServer((req, res) => {
     const u = new URL(req.url, 'http://localhost');
-    // remote mode: every request must carry the token from the printed URL
-    if (token && u.searchParams.get('t') !== token) {
+    // token required for non-local clients only (the desktop window is always trusted)
+    const isLocal = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+    if (token && !isLocal && u.searchParams.get('t') !== token) {
       res.writeHead(401).end('unauthorized');
       return;
     }
@@ -93,6 +94,9 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
         try { onLayout?.(JSON.parse(body).tree ?? null); } catch { /* ignore */ }
         res.writeHead(204).end();
       });
+    } else if (u.pathname === '/remote' && req.method === 'POST') {
+      const out = onRemote?.() ?? { ok: false, text: 'unavailable' };
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
     } else if (u.pathname === '/qrlib.js') {
       res.writeHead(200, { 'content-type': 'application/javascript' })
         .end(readFileSync(requireCjs.resolve('qrcode-generator')));

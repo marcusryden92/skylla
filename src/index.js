@@ -154,6 +154,7 @@ function saveManifest() {
 
 // --- UI: Electron window (default) or terminal via --tui ---
 let rerender = () => {};
+let requestRemote = () => ({ ok: false, text: 'remote is only available in the dashboard (web) mode' });
 if (useTui) {
   const React = (await import('react')).default;
   const { render } = await import('ink');
@@ -164,18 +165,17 @@ if (useTui) {
   const { startServer } = await import('./server.js');
   const { randomUUID } = await import('node:crypto');
   let port = 0;
-  let useTunnel = false;
-  if (remote) {
-    useTunnel = spawnSync('where', ['cloudflared'], { windowsHide: true }).status === 0;
-    if (!useTunnel) { // no cloudflared -> LAN fallback (same Wi-Fi only)
-      const { networkInterfaces } = await import('node:os');
-      host = Object.values(networkInterfaces()).flat()
-        .find(i => i && !i.internal && i.family === 'IPv4')?.address ?? '127.0.0.1';
-      port = 7777;
-      console.log('cloudflared not found - remote limited to your Wi-Fi. For internet access: winget install Cloudflare.cloudflared');
-    }
+  const hasCloudflared = () => spawnSync('where', ['cloudflared'], { windowsHide: true }).status === 0;
+  const useTunnel = remote && hasCloudflared();
+  if (remote && !useTunnel) { // no cloudflared -> LAN fallback (same Wi-Fi only)
+    const { networkInterfaces } = await import('node:os');
+    host = Object.values(networkInterfaces()).flat()
+      .find(i => i && !i.internal && i.family === 'IPv4')?.address ?? '127.0.0.1';
+    port = 7777;
+    console.log('cloudflared not found - remote limited to your Wi-Fi. For internet access: winget install Cloudflare.cloudflared');
   }
-  const token = (remote || host !== '127.0.0.1') ? randomUUID().replaceAll('-', '').slice(0, 8) : null;
+  // token always exists; the server only enforces it for non-local clients
+  const token = randomUUID().replaceAll('-', '').slice(0, 8);
   const { broadcast, url } = await startServer({
     state,
     host,
@@ -195,6 +195,7 @@ if (useTui) {
       spawn(process.execPath, [fileURLToPath(import.meta.url), '-C', dir, '--orch-model', model ?? orchModel],
         { detached: true, stdio: 'ignore' }).unref();
     },
+    onRemote: () => startTunnel(),
     onListRuns: dir => {
       const runsDir = join(resolve(dir || cwd), '.skylla', 'runs');
       if (!existsSync(runsDir)) return [];
@@ -263,11 +264,15 @@ if (useTui) {
     },
   });
   rerender = broadcast;
-  if (token) state.remoteUrl = url; // dashboard offers a scannable QR for this
+  if (host !== '127.0.0.1') state.remoteUrl = url; // LAN mode: QR immediately
   console.log(`skylla dashboard: ${url}`);
-  if (useTunnel) {
-    // free public HTTPS tunnel; URL appears in cloudflared's output
-    const cf = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${new URL(url).port}`],
+
+  // internet tunnel: also startable mid-run from the dashboard's Remote button
+  let cfProc = null;
+  function startTunnel() {
+    if (cfProc) return { ok: true, text: state.remoteUrl ?? 'tunnel already starting - QR appears when ready' };
+    if (!hasCloudflared()) return { ok: false, text: 'cloudflared is not installed.\nRun once: winget install Cloudflare.cloudflared' };
+    cfProc = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${new URL(url).port}`],
       { windowsHide: true });
     const sniff = d => {
       const m = String(d).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
@@ -277,10 +282,14 @@ if (useTui) {
         rerender();
       }
     };
-    cf.stdout.on('data', sniff);
-    cf.stderr.on('data', sniff);
-    process.on('exit', () => cf.kill());
+    cfProc.stdout.on('data', sniff);
+    cfProc.stderr.on('data', sniff);
+    cfProc.on('exit', () => { cfProc = null; });
+    process.on('exit', () => cfProc?.kill());
+    return { ok: true, text: 'starting tunnel - the QR button appears when ready' };
   }
+  requestRemote = startTunnel;
+  if (useTunnel) startTunnel();
   const srcDir = dirname(fileURLToPath(import.meta.url));
   try {
     const electronBin = (await import('electron')).default; // path to electron.exe
@@ -351,6 +360,11 @@ function handleUserInput(text) {
   if (perm) {
     if (!target.permRequests?.length) target.pushLine('[skylla] no permission request pending');
     else target.respondPermission(perm[1] === 'allow');
+    return rerender();
+  }
+  if (/^\/remote\s*$/.test(text)) {
+    const r = requestRemote();
+    state.orchestrator?.pushLine(`[skylla] ${r.text}`);
     return rerender();
   }
   if (/^\/(stop|esc)\s*$/.test(text)) { target?.interrupt(); return; }
