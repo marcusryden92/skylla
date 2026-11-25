@@ -589,6 +589,7 @@ function panelFor(name, container, big) {
         <span class="status"></span>
         <span class="btns">
           <button class="pb pb-id" title="copy session id">id</button>
+          <button class="pb pb-stop" title="interrupt current turn">■</button>
           <button class="pb pb-max" title="maximize (Esc to restore)">⛶</button>
           <button class="pb pb-kill" title="kill worker">✕</button>
         </span>
@@ -604,6 +605,8 @@ function panelFor(name, container, big) {
       const id = targets().find(t => t.name === name)?.sessions?.at(-1);
       if (id) navigator.clipboard.writeText(id);
     });
+    el.querySelector('.pb-stop').addEventListener('click', () =>
+      fetch('/send', { method: 'POST', body: JSON.stringify({ text: `@${name} /stop` }) }));
     const killBtn = el.querySelector('.pb-kill');
     if (name === 'orch') killBtn.remove();
     else killBtn.addEventListener('click', () => {

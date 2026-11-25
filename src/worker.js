@@ -168,6 +168,18 @@ export class Worker extends EventEmitter {
     if (this.lines.length > 200) this.lines.splice(0, this.lines.length - 200);
   }
 
+  // Esc-equivalent: stop the current turn, session stays alive for the next prompt.
+  interrupt() {
+    if (!this.proc) return;
+    this.proc.stdin.write(JSON.stringify({
+      type: 'control_request',
+      request_id: `int-${Date.now()}`,
+      request: { subtype: 'interrupt' },
+    }) + '\n');
+    this.pushLine('[skylla] interrupt sent');
+    this.emit('update');
+  }
+
   kill() {
     if (this.proc) {
       this.status = 'killed';

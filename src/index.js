@@ -193,6 +193,7 @@ function handleUserInput(text) {
   }
   const mm = text.match(/^\/model\s+(\S+)\s*$/);
   if (mm) return swapModel(target, mm[1].toLowerCase());
+  if (/^\/(stop|esc)\s*$/.test(text)) { target?.interrupt(); return; }
   if (/^\/kill\s*$/.test(text)) {
     if (target === state.orchestrator) {
       target.pushLine('[skylla] cannot /kill the orchestrator (use the model dropdown or just close skylla)');
