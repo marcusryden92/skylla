@@ -150,7 +150,21 @@ export class Worker extends EventEmitter {
           this.emit('text', block.text);
         } else if (block.type === 'tool_use') {
           this.pushLine(`[${block.name}] ${summarizeInput(block.input, this.cwd)}`);
+          (this.toolUses ??= new Map()).set(block.id, { name: block.name, cmd: block.input?.command });
+          if (this.toolUses.size > 50) this.toolUses.delete(this.toolUses.keys().next().value);
         }
+      }
+    } else if (ev.type === 'user') {
+      // tool results come back as user turns; surface shell output
+      for (const block of ev.message?.content ?? []) {
+        if (block?.type !== 'tool_result') continue;
+        const meta = this.toolUses?.get(block.tool_use_id);
+        if (!meta || meta.name !== 'Bash') continue;
+        const out = (typeof block.content === 'string'
+          ? block.content
+          : (block.content ?? []).map(c => c.text ?? '').join('\n')).trim();
+        if (out) this.pushLine(`⇠ ${out.split('\n').slice(0, 2).join(' · ').slice(0, 160)}`);
+        this.emit('shell', { cmd: meta.cmd ?? '', out });
       }
     } else if (ev.type === 'result') {
       if (typeof ev.total_cost_usd === 'number') {

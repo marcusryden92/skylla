@@ -38,6 +38,7 @@ function snapshot(state) {
     planUsage: state.planUsage ?? null,
     pendingPlan: state.pendingPlan ?? null,
     planApproved: !!state.planApproved,
+    shellLog: (state.shellLog ?? []).slice(-100),
   };
 }
 

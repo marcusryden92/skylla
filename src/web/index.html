@@ -313,6 +313,19 @@
   .msgtoggle:hover { color: var(--accent); border-color: #58a6ff; }
   .mdcode { background: #21262d; border-radius: 4px; padding: 0 5px; color: #7ee0ff; }
   .mdhead { font-weight: 700; color: var(--accent); }
+  .line.res { color: var(--dim); }
+
+  /* shell tile */
+  .sh-cmd { margin-top: 6px; }
+  .sh-cmd .tag { font-size: 11px; padding: 0 6px; }
+  .sh-cmd .dollar { color: #4ade80; font-weight: 700; }
+  .sh-out {
+    color: var(--dim);
+    white-space: pre-wrap;
+    border-left: 2px solid var(--border);
+    padding-left: 8px;
+    margin: 2px 0 2px 2px;
+  }
   .line.cmd {
     border-left: 3px solid #a371f7;
     background: rgba(163,113,247,.08);
@@ -425,6 +438,7 @@
   <div id="titlebar">
     <b>SKYLLA</b>
     <button id="open-folder" hidden>Open Folder</button>
+    <button id="shell-btn" title="toggle the shared shell console tile">Shell</button>
     <span class="lbl">orch</span>
     <select id="orch-model">
       <option value="haiku">haiku</option>
@@ -532,6 +546,7 @@ function lineHtml(l) {
     return `<div class="line user chunky"><button class="msgtoggle" data-k="${k}">${collapsed ? '+' : '−'}</button><span>&gt; ${esc(shown)}</span></div>`;
   }
   if (l.startsWith('[skylla]') || l.startsWith('---')) return `<div class="line sys">${esc(l)}</div>`;
+  if (l.startsWith('⇠')) return `<div class="line res">${esc(l)}</div>`;
   const t = l.match(/^(\[[A-Za-z][^\]]*\])\s?([\s\S]*)$/); // "[ToolName] args"
   if (t) return `<div class="line tool"><span class="tname">${esc(t[1])}</span> ${esc(t[2])}</div>`;
   return `<div class="line">${md(esc(l)) || '&nbsp;'}</div>`;
@@ -610,7 +625,7 @@ function syncLayout(ws) {
   const names = new Set(ws.map(w => w.name));
   let changed = false;
   for (const l of [...leavesOf(tree)]) {
-    if (!names.has(l.name)) { tree = removeLeaf(tree, l.name); changed = true; }
+    if (!names.has(l.name) && !l.name.startsWith('::')) { tree = removeLeaf(tree, l.name); changed = true; }
   }
   const have = new Set([...leavesOf(tree)].map(l => l.name));
   for (const w of ws) {
@@ -734,21 +749,22 @@ function panelFor(name, container, big) {
     container.appendChild(el);
 
     const head = el.querySelector('.head');
+    // synthetic tiles (::shell) only get maximize; orch loses diff/kill
+    if (name.startsWith('::'))
+      for (const b of el.querySelectorAll('.pb-id,.pb-tx,.pb-diff,.pb-stop,.pb-kill')) b.remove();
+    else if (name === 'orch')
+      for (const b of el.querySelectorAll('.pb-diff,.pb-kill')) b.remove();
     el.querySelector('.pb-max').addEventListener('click', () => toggleMax(name));
     head.addEventListener('dblclick', e => { if (!e.target.closest('.pb')) toggleMax(name); });
-    el.querySelector('.pb-id').addEventListener('click', () => {
+    el.querySelector('.pb-id')?.addEventListener('click', () => {
       const id = targets().find(t => t.name === name)?.sessions?.at(-1);
       if (id) navigator.clipboard.writeText(id);
     });
-    el.querySelector('.pb-tx').addEventListener('click', () => openTranscript(name));
-    const diffBtn = el.querySelector('.pb-diff');
-    if (name === 'orch') diffBtn.remove();
-    else diffBtn.addEventListener('click', () => openDiff(name));
-    el.querySelector('.pb-stop').addEventListener('click', () =>
+    el.querySelector('.pb-tx')?.addEventListener('click', () => openTranscript(name));
+    el.querySelector('.pb-diff')?.addEventListener('click', () => openDiff(name));
+    el.querySelector('.pb-stop')?.addEventListener('click', () =>
       fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: `@${name} /stop` }) }));
-    const killBtn = el.querySelector('.pb-kill');
-    if (name === 'orch') killBtn.remove();
-    else killBtn.addEventListener('click', () => {
+    el.querySelector('.pb-kill')?.addEventListener('click', () => {
       if (confirm(`Kill ${name}? Panel is removed; cost is kept.`))
         fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: `@${name} /kill` }) });
     });
@@ -840,22 +856,29 @@ function render(s) {
   const rects = computeRects(tree, { x: 0, y: 0, w: 100, h: 100 }, {});
 
   const alive = new Set();
+  const placePanel = (p, r) => {
+    if (!r) return;
+    p.el.style.left = `calc(${r.x}% + 3px)`;
+    p.el.style.top = `calc(${r.y}% + 3px)`;
+    p.el.style.width = `calc(${r.w}% - 6px)`;
+    p.el.style.height = `calc(${r.h}% - 6px)`;
+    if (!p.el.dataset.laid) {
+      p.el.dataset.laid = '1';
+      requestAnimationFrame(() => p.el.classList.add('ready')); // no transition on first placement
+    }
+  };
   for (const w of tiles) {
     alive.add(w.name);
     const p = panelFor(w.name, grid);
     if (w.name === 'orch') p.el.classList.add('orchp');
     renderWorker(p, w);
-    const r = rects[w.name];
-    if (r) {
-      p.el.style.left = `calc(${r.x}% + 3px)`;
-      p.el.style.top = `calc(${r.y}% + 3px)`;
-      p.el.style.width = `calc(${r.w}% - 6px)`;
-      p.el.style.height = `calc(${r.h}% - 6px)`;
-      if (!p.el.dataset.laid) {
-        p.el.dataset.laid = '1';
-        requestAnimationFrame(() => p.el.classList.add('ready')); // no transition on first placement
-      }
-    }
+    placePanel(p, rects[w.name]);
+  }
+  if ([...leavesOf(tree)].some(l => l.name === '::shell')) {
+    alive.add('::shell');
+    const p = panelFor('::shell', grid);
+    renderShell(p, s);
+    placePanel(p, rects['::shell']);
   }
   for (const [name, p] of panels) {
     if (!alive.has(name)) { p.el.remove(); panels.delete(name); if (maximized === name) maximized = null; }
@@ -894,6 +917,42 @@ function render(s) {
     sel.value = s.orchestrator.label;
   }
 }
+
+// shared shell console tile
+function renderShell(p, s) {
+  const { el, body } = p;
+  const tag = el.querySelector('.tag');
+  tag.textContent = 'shell';
+  tag.style.background = '#8b949e';
+  el.querySelector('.meta').textContent = `${(s.shellLog ?? []).length} commands`;
+  el.querySelector('.cost').textContent = '';
+  el.querySelector('.ctxpct').textContent = '';
+  el.querySelector('.burn').textContent = '';
+  const st = el.querySelector('.status');
+  st.textContent = 'live';
+  st.className = 'status';
+  el.querySelector('.ctx > div').style.width = '0%';
+
+  const sel = document.getSelection();
+  if (sel && !sel.isCollapsed && body.contains(sel.anchorNode)) return;
+  const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+  const html = (s.shellLog ?? []).map(e =>
+    `<div class="sh-cmd"><span class="tag" style="background:${COLOR[e.color] ?? e.color}">${esc(e.w)}</span> <span class="dollar">$</span> ${esc(e.cmd)}</div>`
+    + (e.out ? `<div class="sh-out">${esc(e.out)}</div>` : '')
+  ).join('') || '<div class="sh-out">(no shell commands yet)</div>';
+  if (body.dataset.html !== html) {
+    body.innerHTML = html;
+    body.dataset.html = html;
+    if (nearBottom) body.scrollTop = body.scrollHeight;
+  }
+}
+
+document.getElementById('shell-btn').addEventListener('click', () => {
+  if ([...leavesOf(tree)].some(l => l.name === '::shell')) tree = removeLeaf(tree, '::shell');
+  else insertWorker({ name: '::shell', mult: 0.5 }, lastState?.workers ?? []);
+  saveLayout();
+  if (lastState) render(lastState);
+});
 
 const offline = document.getElementById('flag-offline');
 function connect() {

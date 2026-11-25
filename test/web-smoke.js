@@ -14,6 +14,11 @@ const state = {
   budget: 10, weekUsd: 3.21, done: false, maxWorkers: 18,
   pendingPlan: { summary: 'Rewrite module A + tests in parallel', workers: [{ name: 'w5', model: 'opus', task: 'rewrite' }, { name: 'w6', model: 'haiku', task: 'docs' }], estimate_eq: 1.4 },
   planApproved: false,
+  shellLog: [
+    { w: 'w1', color: 'cyan', ts: Date.now(), cmd: 'npm test', out: '48 passing\n0 failing' },
+    { w: 'w2', color: 'green', ts: Date.now(), cmd: 'git status --short', out: ' M src/app.js\n?? src/new.js' },
+    { w: 'orch', color: 'white', ts: Date.now(), cmd: 'git merge skylla/w1', out: 'Fast-forward\n 2 files changed' },
+  ],
   orchestrator: mk('orch', 'claude-fable-5', 'white', 'running', [
     '--- gen 1 · session abc123 ---',
     'Classification: LARGE, 3 workers, parallelizable rewrite.',

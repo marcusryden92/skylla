@@ -103,6 +103,7 @@ const state = {
   done: false,
   weekUsd: 0,
   layout: null,
+  shellLog: [],        // chronological Bash commands + output across all sessions
   pendingPlan: null,   // last @@PLAN from the orchestrator, awaiting user approval
   planApproved: false, // spend gate: spawns are code-blocked until true
   startedAt: Date.now(),
@@ -462,8 +463,20 @@ function spawnWorker({ name, model, prompt, worktree }) {
   saveManifest();
 }
 
+function recordShell(w) {
+  w.on('shell', e => {
+    state.shellLog.push({
+      w: w.name, color: w.color, ts: Date.now(),
+      cmd: String(e.cmd ?? '').slice(0, 200),
+      out: String(e.out ?? '').split('\n').slice(0, 12).join('\n').slice(0, 1200),
+    });
+    if (state.shellLog.length > 200) state.shellLog.splice(0, state.shellLog.length - 200);
+  });
+}
+
 function wireWorker(w) {
   w.on('update', rerender);
+  recordShell(w);
   w.on('text', text => {
     if (text.includes('===HANDOFF_DONE===')) return recycleNow(w);
     if (text.includes('===TASK_DONE===')) {
@@ -549,6 +562,7 @@ function buildOrchestrator(model) {
     systemPrompt: orchSysPrompt(model),
   });
   o.on('update', rerender);
+  recordShell(o);
   o.on('text', text => {
     appendFileSync(join(runDir, 'orch.log'), text + '\n---\n');
     if (text.includes('===HANDOFF_DONE===') && o.escalating) {
