@@ -23,7 +23,7 @@ const state = {
   ], 22, 1.84),
   workers: [
     mk('w1', 'claude-sonnet-4-6', 'cyan', 'running',
-      ['[Read] src/moduleA.js', '[Edit] src/moduleA.js', 'Refactoring exports...', 'Running tests now.'], 34, 0.42),
+      ['[Read] src/moduleA.js', '> Here is a chunky pasted message\nwith multiple lines\nand some detail about what to do\nline four\nline five of the paste', '[Edit] src/moduleA.js', 'Refactoring exports...', 'Running tests now.'], 34, 0.42),
     mk('w2', 'claude-opus-4-6', 'green', 'running',
       ['[Bash] npm test', 'All 48 tests pass.', 'Starting on step file 7.'], 61, 0.88),
     mk('w3', 'claude-haiku-4-5', 'yellow', 'idle',

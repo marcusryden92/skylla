@@ -110,9 +110,9 @@ export class Worker extends EventEmitter {
   // If the process is mid-recycle, queue the message for the next generation.
   send(text) {
     if (!this.proc) { (this.pendingSends ??= []).push(text); return; }
-    // echo incoming prompt into the panel so it's visible where the message landed
-    const first = text.split('\n')[0];
-    this.pushLine(`> ${first.slice(0, 160)}${first.length > 160 || text.includes('\n') ? ' …' : ''}`);
+    // echo the full incoming prompt into the panel (UI offers collapse for chunky ones)
+    const flat = text.length > 2000 ? text.slice(0, 2000) + ' …[truncated]' : text;
+    this.pushLine(`> ${flat}`);
     const msg = { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } };
     this.proc.stdin.write(JSON.stringify(msg) + '\n');
     this.status = 'running';
