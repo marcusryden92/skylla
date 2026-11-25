@@ -302,6 +302,12 @@ function handleUserInput(text) {
     }
     return rerender();
   }
+  const perm = text.match(/^\/(allow|deny)\s*$/);
+  if (perm) {
+    if (!target.permRequests?.length) target.pushLine('[skylla] no permission request pending');
+    else target.respondPermission(perm[1] === 'allow');
+    return rerender();
+  }
   if (/^\/(stop|esc)\s*$/.test(text)) { target?.interrupt(); return; }
   if (/^\/status\s*$/.test(text)) {
     target.pushLine(`[skylla] ${target.name}: ${target.model} · gen ${target.generation} · ctx ${target.contextPct}% · $${target.cost.toFixed(2)} · ${target.status} · session ${target.sessionIds.at(-1)?.slice(0, 8) ?? '-'}`);

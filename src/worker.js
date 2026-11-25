@@ -80,6 +80,7 @@ export class Worker extends EventEmitter {
       '--verbose',
       ...sessionArgs,
       '--permission-mode', this.permissionMode ?? 'acceptEdits',
+      '--permission-prompt-tool', 'stdio', // tools outside the mode prompt via control_request instead of auto-deny
     ];
     if (this.model) args.push('--model', this.model);
     if (this.systemPrompt) args.push('--append-system-prompt', this.systemPrompt);
@@ -166,6 +167,10 @@ export class Worker extends EventEmitter {
         if (out) this.pushLine(`⇠ ${out.split('\n').slice(0, 2).join(' · ').slice(0, 160)}`);
         this.emit('shell', { cmd: meta.cmd ?? '', out });
       }
+    } else if (ev.type === 'control_request' && ev.request?.subtype === 'can_use_tool') {
+      const req = { id: ev.request_id, tool: ev.request.tool_name, input: ev.request.input ?? {} };
+      (this.permRequests ??= []).push(req);
+      this.pushLine(`[skylla] PERMISSION NEEDED: [${req.tool}] ${summarizeInput(req.input, this.cwd)}`);
     } else if (ev.type === 'result') {
       if (typeof ev.total_cost_usd === 'number') {
         this.cost += ev.total_cost_usd;
@@ -180,6 +185,24 @@ export class Worker extends EventEmitter {
   pushLine(line) {
     this.lines.push(line);
     if (this.lines.length > 200) this.lines.splice(0, this.lines.length - 200);
+  }
+
+  // Answer the oldest pending can_use_tool prompt (wire shape verified against cli.js).
+  respondPermission(allow) {
+    const req = this.permRequests?.shift();
+    if (!req || !this.proc) return;
+    this.proc.stdin.write(JSON.stringify({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: req.id,
+        response: allow
+          ? { behavior: 'allow', updatedInput: req.input }
+          : { behavior: 'deny', message: 'Denied by the user in skylla.' },
+      },
+    }) + '\n');
+    this.pushLine(`[skylla] ${allow ? 'allowed' : 'denied'}: [${req.tool}]`);
+    this.emit('update');
   }
 
   // Esc-equivalent: stop the current turn, session stays alive for the next prompt.

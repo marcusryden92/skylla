@@ -19,6 +19,9 @@ function serializeWorker(w) {
     burn: w.burnPerMin,
     generation: w.generation,
     sessions: w.sessionIds ?? [],
+    perm: w.permRequests?.[0]
+      ? { tool: w.permRequests[0].tool, detail: JSON.stringify(w.permRequests[0].input ?? {}).slice(0, 160), more: w.permRequests.length - 1 }
+      : null,
     lines: w.lines.slice(-300),
     label: resolvePricing(w.model)?.label ?? w.model ?? '?',
     mult: multiplier(w.model),

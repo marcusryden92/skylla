@@ -315,6 +315,31 @@
   .mdhead { font-weight: 700; color: var(--accent); }
   .line.res { color: var(--dim); }
 
+  /* permission prompt strip */
+  .permbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: rgba(210,153,34,.12);
+    border-bottom: 1px solid #d29922;
+    overflow: hidden;
+  }
+  .permbar[hidden] { display: none; }
+  .permbar .ptext { color: #d29922; font-weight: 600; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .permbar button {
+    flex: none;
+    background: #21262d; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text); font: inherit; font-size: 11px; padding: 2px 10px; cursor: pointer;
+  }
+  .permbar .p-allow { border-color: #4ade80; color: #4ade80; font-weight: 700; }
+  .permbar .p-deny:hover, .permbar .p-allow:hover { background: #30363d; }
+
+  /* fenced code blocks (``` ... ```) */
+  .line.codeblock { background: #0b0e13; color: #a5d6ff; padding: 0 8px; border-left: 2px solid var(--border); }
+  .line.fenceline { color: var(--dim); }
+
   /* percolating indicator */
   .thinking { display: flex; gap: 4px; padding: 6px 2px; }
   .thinking i {
@@ -450,6 +475,7 @@
     <b>SKYLLA</b>
     <button id="open-folder" hidden>Open Folder</button>
     <button id="shell-btn" title="toggle the shared shell console tile">Shell</button>
+    <button id="resume-btn" title="resume this folder's latest run in a new window">Resume</button>
     <span class="lbl">orch</span>
     <select id="orch-model">
       <option value="haiku">haiku</option>
@@ -756,8 +782,17 @@ function panelFor(name, container, big) {
         </span>
       </div>
       <div class="ctx"><div></div></div>
+      <div class="permbar" hidden>
+        <span class="ptext"></span>
+        <button class="p-allow">Allow</button>
+        <button class="p-deny">Deny</button>
+      </div>
       <div class="body"></div>`;
     container.appendChild(el);
+    el.querySelector('.p-allow').addEventListener('click', () =>
+      fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: `@${name} /allow` }) }));
+    el.querySelector('.p-deny').addEventListener('click', () =>
+      fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: `@${name} /deny` }) }));
 
     const head = el.querySelector('.head');
     // synthetic tiles (::shell) only get maximize; orch loses diff/kill
@@ -840,12 +875,26 @@ function renderWorker(p, w) {
   bar.style.background = w.contextPct > 50 ? '#facc15' : '#4ade80';
   el.classList.toggle('dead', w.status === 'done' || w.status === 'killed' || w.status === 'error');
 
+  const pb = el.querySelector('.permbar');
+  pb.hidden = !w.perm;
+  if (w.perm) {
+    el.querySelector('.ptext').textContent =
+      `[${w.perm.tool}] ${w.perm.detail}${w.perm.more > 0 ? `  (+${w.perm.more} more)` : ''}`;
+  }
+
   // don't clobber an in-progress text selection (copy/paste from panels)
   const sel = document.getSelection();
   if (sel && !sel.isCollapsed && body.contains(sel.anchorNode)) return;
 
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-  const html = w.lines.map(lineHtml).join('')
+  // stateful line render: fenced ``` blocks get code styling
+  let fence = false;
+  const parts = [];
+  for (const l of w.lines) {
+    if (/^\s*```/.test(l)) { fence = !fence; parts.push(`<div class="line fenceline">${esc(l)}</div>`); continue; }
+    parts.push(fence ? `<div class="line codeblock">${esc(l) || '&nbsp;'}</div>` : lineHtml(l));
+  }
+  const html = parts.join('')
     + (w.status === 'running' ? '<div class="thinking"><i></i><i></i><i></i></div>' : '');
   if (body.dataset.html !== html) {
     body.innerHTML = html;
@@ -1081,6 +1130,10 @@ function doOpen(mode) {
 }
 document.getElementById('modal-new').addEventListener('click', () => doOpen('new'));
 document.getElementById('modal-resume').addEventListener('click', () => doOpen('resume'));
+// titlebar Resume: latest run of the CURRENT folder, new window
+document.getElementById('resume-btn').addEventListener('click', () => {
+  if (lastState?.cwd) fetch(api('/open'), { method: 'POST', body: JSON.stringify({ dir: lastState.cwd, mode: 'resume' }) });
+});
 document.getElementById('modal-here').addEventListener('click', () => doOpen('current'));
 document.getElementById('modal-cancel').addEventListener('click', () => { modal.hidden = true; });
 
@@ -1202,6 +1255,10 @@ function notifyTransitions(s, totalCost) {
       if (sig === 'stalled') fire(`skylla: ${w.name} stalled`, 'no activity for 4+ minutes');
     }
     prevNote.states[w.name] = sig;
+    const permSig = w.perm ? `${w.name}:${w.perm.tool}:${w.perm.detail}` : null;
+    if (permSig && prevNote['perm_' + w.name] !== permSig)
+      fire(`skylla: ${w.name} needs permission`, `[${w.perm.tool}] ${w.perm.detail}`);
+    prevNote['perm_' + w.name] = permSig;
   }
 }
 
