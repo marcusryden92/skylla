@@ -2,7 +2,7 @@
 import { mkdirSync, writeFileSync, appendFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Worker, COLORS } from './worker.js';
 import { App } from './ui.js';
@@ -23,6 +23,7 @@ let resumeRunId = null;
 let useTui = false;
 let host = '127.0.0.1'; // --host 0.0.0.0 (or a LAN/tailscale IP) enables remote + token auth
 let autoApprove = false; // --auto-approve skips the spend gate
+let remote = false; // --remote: internet via cloudflared tunnel if installed, else LAN IP
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '-C') cwd = resolve(argv[++i]);
   else if (argv[i] === '--budget') budget = parseFloat(argv[++i]);
@@ -30,7 +31,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (argv[i] === '--recycle-at') recycleAt = parseInt(argv[++i], 10);
   else if (argv[i] === '--tui') useTui = true;
   else if (argv[i] === '--host') host = argv[++i];
-  else if (argv[i] === '--remote') host = 'auto'; // one flag: LAN IP + fixed port + short token
+  else if (argv[i] === '--remote') remote = true;
   else if (argv[i] === '--auto-approve') autoApprove = true;
   else if (argv[i] === 'resume' && !resumeMode && !task) resumeMode = true;
   else if (resumeMode && !resumeRunId) resumeRunId = argv[i];
@@ -163,13 +164,18 @@ if (useTui) {
   const { startServer } = await import('./server.js');
   const { randomUUID } = await import('node:crypto');
   let port = 0;
-  if (host === 'auto') { // --remote: pick the LAN address for me, keep the URL short
-    const { networkInterfaces } = await import('node:os');
-    host = Object.values(networkInterfaces()).flat()
-      .find(i => i && !i.internal && i.family === 'IPv4')?.address ?? '127.0.0.1';
-    port = 7777;
+  let useTunnel = false;
+  if (remote) {
+    useTunnel = spawnSync('where', ['cloudflared'], { windowsHide: true }).status === 0;
+    if (!useTunnel) { // no cloudflared -> LAN fallback (same Wi-Fi only)
+      const { networkInterfaces } = await import('node:os');
+      host = Object.values(networkInterfaces()).flat()
+        .find(i => i && !i.internal && i.family === 'IPv4')?.address ?? '127.0.0.1';
+      port = 7777;
+      console.log('cloudflared not found - remote limited to your Wi-Fi. For internet access: winget install Cloudflare.cloudflared');
+    }
   }
-  const token = host !== '127.0.0.1' ? randomUUID().replaceAll('-', '').slice(0, 8) : null;
+  const token = (remote || host !== '127.0.0.1') ? randomUUID().replaceAll('-', '').slice(0, 8) : null;
   const { broadcast, url } = await startServer({
     state,
     host,
@@ -259,6 +265,22 @@ if (useTui) {
   rerender = broadcast;
   if (token) state.remoteUrl = url; // dashboard offers a scannable QR for this
   console.log(`skylla dashboard: ${url}`);
+  if (useTunnel) {
+    // free public HTTPS tunnel; URL appears in cloudflared's output
+    const cf = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${new URL(url).port}`],
+      { windowsHide: true });
+    const sniff = d => {
+      const m = String(d).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+      if (m && !state.remoteUrl?.startsWith(m[0])) {
+        state.remoteUrl = `${m[0]}/?t=${token}`;
+        console.log(`skylla remote (internet): ${state.remoteUrl}`);
+        rerender();
+      }
+    };
+    cf.stdout.on('data', sniff);
+    cf.stderr.on('data', sniff);
+    process.on('exit', () => cf.kill());
+  }
   const srcDir = dirname(fileURLToPath(import.meta.url));
   try {
     const electronBin = (await import('electron')).default; // path to electron.exe
