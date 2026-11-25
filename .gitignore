@@ -16,3 +16,5 @@ Thumbs.db
 # Logs
 *.log
 .skylla/
+test/shot-*.png
+test/shot.log
