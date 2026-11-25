@@ -45,7 +45,7 @@ function snapshot(state) {
   };
 }
 
-export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, onDiff, onMerge, onDiscard, onTranscript, onListRuns, host = '127.0.0.1', token = null }) {
+export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, onDiff, onMerge, onDiscard, onTranscript, onListRuns, host = '127.0.0.1', port = 0, token = null }) {
   const htmlPath = join(dirname(fileURLToPath(import.meta.url)), 'web', 'index.html');
   const clients = new Set();
 
@@ -142,7 +142,7 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
   };
 
   return new Promise(done => {
-    srv.listen(0, host, () => {
+    srv.listen(port, host, () => {
       const shownHost = host === '0.0.0.0' ? '127.0.0.1' : host;
       const t = token ? `/?t=${token}` : '';
       done({ broadcast, url: `http://${shownHost}:${srv.address().port}${t}` });

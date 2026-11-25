@@ -30,6 +30,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (argv[i] === '--recycle-at') recycleAt = parseInt(argv[++i], 10);
   else if (argv[i] === '--tui') useTui = true;
   else if (argv[i] === '--host') host = argv[++i];
+  else if (argv[i] === '--remote') host = 'auto'; // one flag: LAN IP + fixed port + short token
   else if (argv[i] === '--auto-approve') autoApprove = true;
   else if (argv[i] === 'resume' && !resumeMode && !task) resumeMode = true;
   else if (resumeMode && !resumeRunId) resumeRunId = argv[i];
@@ -161,10 +162,18 @@ if (useTui) {
 } else {
   const { startServer } = await import('./server.js');
   const { randomUUID } = await import('node:crypto');
-  const token = host !== '127.0.0.1' ? randomUUID().replaceAll('-', '') : null;
+  let port = 0;
+  if (host === 'auto') { // --remote: pick the LAN address for me, keep the URL short
+    const { networkInterfaces } = await import('node:os');
+    host = Object.values(networkInterfaces()).flat()
+      .find(i => i && !i.internal && i.family === 'IPv4')?.address ?? '127.0.0.1';
+    port = 7777;
+  }
+  const token = host !== '127.0.0.1' ? randomUUID().replaceAll('-', '').slice(0, 8) : null;
   const { broadcast, url } = await startServer({
     state,
     host,
+    port,
     token,
     onInput: handleUserInput,
     // "open folder": new window = fresh skylla instance; current = repoint this one
