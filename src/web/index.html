@@ -303,6 +303,7 @@
     pointer-events: none;
   }
   #mirror .at { color: #4ade80; font-weight: 700; }
+  #mirror .slash { color: #a371f7; font-weight: 700; }
 
   #suggest {
     position: absolute;
@@ -395,6 +396,10 @@ const COLOR = {
   magenta: '#e879c9', blue: '#60a5fa', red: '#f87171', white: '#e5e7eb',
 };
 const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+// remote mode: carry the auth token from the URL on every request
+const TOKEN = new URLSearchParams(location.search).get('t');
+const api = p => TOKEN ? p + (p.includes('?') ? '&' : '?') + 't=' + TOKEN : p;
 
 function lineHtml(l) {
   const d = l.match(/^@@(SPAWN|SEND|KILL|DONE|ESCALATE)\s*([\s\S]*)$/);
@@ -490,7 +495,7 @@ let saveTimer = null;
 function saveLayout() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() =>
-    fetch('/layout', { method: 'POST', body: JSON.stringify({ tree }) }), 400);
+    fetch(api('/layout'), { method: 'POST', body: JSON.stringify({ tree }) }), 400);
 }
 
 // VS Code style: drop a panel on another's left/right/top/bottom half to split that space
@@ -607,12 +612,12 @@ function panelFor(name, container, big) {
       if (id) navigator.clipboard.writeText(id);
     });
     el.querySelector('.pb-stop').addEventListener('click', () =>
-      fetch('/send', { method: 'POST', body: JSON.stringify({ text: `@${name} /stop` }) }));
+      fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: `@${name} /stop` }) }));
     const killBtn = el.querySelector('.pb-kill');
     if (name === 'orch') killBtn.remove();
     else killBtn.addEventListener('click', () => {
       if (confirm(`Kill ${name}? Panel is removed; cost is kept.`))
-        fetch('/send', { method: 'POST', body: JSON.stringify({ text: `@${name} /kill` }) });
+        fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: `@${name} /kill` }) });
     });
 
     // drag onto another panel's half to split that space (workers only)
@@ -750,7 +755,7 @@ function render(s) {
 
 const offline = document.getElementById('flag-offline');
 function connect() {
-  const es = new EventSource('/events');
+  const es = new EventSource(api('/events'));
   es.onmessage = e => { offline.style.display = 'none'; render(JSON.parse(e.data)); };
   es.onerror = () => { offline.style.display = ''; es.close(); setTimeout(connect, 2000); };
 }
@@ -778,7 +783,9 @@ function mentionToken() {
 }
 
 function updateMirror() {
-  mirror.innerHTML = esc(input.value).replace(/^(@\S*)/, '<span class="at">$1</span>');
+  mirror.innerHTML = esc(input.value)
+    .replace(/^(@\S*)/, '<span class="at">$1</span>')
+    .replace(/^((?:<span class="at">@[^<]*<\/span>\s+)?)(\/\S+)/, '$1<span class="slash">$2</span>');
   mirror.scrollLeft = input.scrollLeft;
 }
 
@@ -823,7 +830,7 @@ input.addEventListener('keydown', e => {
   if (open && (e.key === 'Tab' || e.key === 'Enter')) { e.preventDefault(); return pickSuggestion(sugSel); }
   if (e.key === 'Escape') { suggest.style.display = 'none'; sugItems = []; return; }
   if (e.key === 'Enter' && input.value.trim()) {
-    fetch('/send', { method: 'POST', body: JSON.stringify({ text: input.value }) });
+    fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: input.value }) });
     input.value = '';
     updateMirror();
     suggest.style.display = 'none';
@@ -832,7 +839,7 @@ input.addEventListener('keydown', e => {
 
 // Orchestrator model dropdown: swap mid-run via handoff (same path as "@orch /model X").
 document.getElementById('orch-model').addEventListener('change', e => {
-  fetch('/send', { method: 'POST', body: JSON.stringify({ text: `@orch /model ${e.target.value}` }) });
+  fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: `@orch /model ${e.target.value}` }) });
   e.target.blur();
 });
 
@@ -854,7 +861,7 @@ if (window.skylla) {
   });
 }
 function doOpen(mode) {
-  fetch('/open', { method: 'POST', body: JSON.stringify({
+  fetch(api('/open'), { method: 'POST', body: JSON.stringify({
     dir: modalDir, model: document.getElementById('modal-model').value, mode,
   })});
   modal.hidden = true;
@@ -872,7 +879,7 @@ document.addEventListener('keydown', e => {
 
 // --- file/image upload: drop on a panel to target that worker, paste into the input ---
 function uploadFile(f, target) {
-  fetch(`/upload?name=${encodeURIComponent(f.name || 'pasted.png')}&target=${encodeURIComponent(target === 'orch' ? '' : (target || ''))}`,
+  fetch(api(`/upload?name=${encodeURIComponent(f.name || 'pasted.png')}&target=${encodeURIComponent(target === 'orch' ? '' : (target || ''))}`),
     { method: 'POST', body: f });
 }
 document.addEventListener('dragover', e => {

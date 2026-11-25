@@ -39,12 +39,18 @@ function snapshot(state) {
   };
 }
 
-export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout }) {
+export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, host = '127.0.0.1', token = null }) {
   const htmlPath = join(dirname(fileURLToPath(import.meta.url)), 'web', 'index.html');
   const clients = new Set();
 
   const srv = createServer((req, res) => {
-    if (req.url === '/events') {
+    const u = new URL(req.url, 'http://localhost');
+    // remote mode: every request must carry the token from the printed URL
+    if (token && u.searchParams.get('t') !== token) {
+      res.writeHead(401).end('unauthorized');
+      return;
+    }
+    if (u.pathname === '/events') {
       res.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache',
@@ -53,14 +59,14 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout }
       res.write(`data: ${JSON.stringify(snapshot(state))}\n\n`);
       clients.add(res);
       req.on('close', () => clients.delete(res));
-    } else if (req.url === '/send' && req.method === 'POST') {
+    } else if (u.pathname === '/send' && req.method === 'POST') {
       let body = '';
       req.on('data', c => { body += c; });
       req.on('end', () => {
         try { onInput(String(JSON.parse(body).text ?? '')); } catch { /* ignore bad payloads */ }
         res.writeHead(204).end();
       });
-    } else if (req.url === '/open' && req.method === 'POST') {
+    } else if (u.pathname === '/open' && req.method === 'POST') {
       let body = '';
       req.on('data', c => { body += c; });
       req.on('end', () => {
@@ -70,15 +76,14 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout }
         } catch { /* ignore */ }
         res.writeHead(204).end();
       });
-    } else if (req.url === '/layout' && req.method === 'POST') {
+    } else if (u.pathname === '/layout' && req.method === 'POST') {
       let body = '';
       req.on('data', c => { body += c; });
       req.on('end', () => {
         try { onLayout?.(JSON.parse(body).tree ?? null); } catch { /* ignore */ }
         res.writeHead(204).end();
       });
-    } else if (req.url.startsWith('/upload') && req.method === 'POST') {
-      const u = new URL(req.url, 'http://localhost');
+    } else if (u.pathname === '/upload' && req.method === 'POST') {
       const name = (u.searchParams.get('name') || 'upload.bin').replace(/[^\w.\- ()]/g, '_').slice(0, 120);
       const target = u.searchParams.get('target') || '';
       const chunks = [];
@@ -109,7 +114,10 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout }
   };
 
   return new Promise(done => {
-    srv.listen(0, '127.0.0.1', () =>
-      done({ broadcast, url: `http://127.0.0.1:${srv.address().port}` }));
+    srv.listen(0, host, () => {
+      const shownHost = host === '0.0.0.0' ? '127.0.0.1' : host;
+      const t = token ? `/?t=${token}` : '';
+      done({ broadcast, url: `http://${shownHost}:${srv.address().port}${t}` });
+    });
   });
 }

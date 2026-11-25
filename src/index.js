@@ -21,12 +21,14 @@ let recycleAt = 50;
 let resumeMode = false;
 let resumeRunId = null;
 let useTui = false;
+let host = '127.0.0.1'; // --host 0.0.0.0 (or a LAN/tailscale IP) enables remote + token auth
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '-C') cwd = resolve(argv[++i]);
   else if (argv[i] === '--budget') budget = parseFloat(argv[++i]);
   else if (argv[i] === '--orch-model') orchModel = argv[++i];
   else if (argv[i] === '--recycle-at') recycleAt = parseInt(argv[++i], 10);
   else if (argv[i] === '--tui') useTui = true;
+  else if (argv[i] === '--host') host = argv[++i];
   else if (argv[i] === 'resume' && !resumeMode && !task) resumeMode = true;
   else if (resumeMode && !resumeRunId) resumeRunId = argv[i];
   else if (!task) task = argv[i];
@@ -134,8 +136,12 @@ if (useTui) {
   rerender = () => app.rerender(React.createElement(App, { state, onSubmit: handleUserInput }));
 } else {
   const { startServer } = await import('./server.js');
+  const { randomUUID } = await import('node:crypto');
+  const token = host !== '127.0.0.1' ? randomUUID().replaceAll('-', '') : null;
   const { broadcast, url } = await startServer({
     state,
+    host,
+    token,
     onInput: handleUserInput,
     // "open folder": new window = fresh skylla instance; current = repoint this one
     onOpenFolder: ({ dir, model, mode }) => {
@@ -203,6 +209,25 @@ function handleUserInput(text) {
   const mm = text.match(/^\/model\s+(\S+)\s*$/);
   if (mm) return swapModel(target, mm[1].toLowerCase());
   if (/^\/(stop|esc)\s*$/.test(text)) { target?.interrupt(); return; }
+  if (/^\/status\s*$/.test(text)) {
+    target.pushLine(`[skylla] ${target.name}: ${target.model} · gen ${target.generation} · ctx ${target.contextPct}% · $${target.cost.toFixed(2)} · ${target.status} · session ${target.sessionIds.at(-1)?.slice(0, 8) ?? '-'}`);
+    return rerender();
+  }
+  if (/^\/recycle\s*$/.test(text)) { // controlled compaction: handoff file -> fresh context
+    if (target === state.orchestrator) escalateOrch('user requested recycle', currentOrchModel());
+    else if (target.proc) { target.pushLine('[skylla] manual recycle via handoff'); requestHandoff(target); }
+    else { target.pushLine('[skylla] not running - nothing to recycle'); rerender(); }
+    return;
+  }
+  if (/^\/clear\s*$/.test(text)) { // hard reset: fresh context, NO handoff
+    if (target === state.orchestrator) {
+      target.pushLine('[skylla] refusing to /clear the orchestrator - use /recycle (handoff keeps the run coherent)');
+      return rerender();
+    }
+    const fresh = () => { target.contextTokens = 0; target.start('Your context was cleared by the user. Await instructions.'); };
+    if (target.proc) { target.once('exit', fresh); target.kill(); } else fresh();
+    return;
+  }
   if (/^\/kill\s*$/.test(text)) {
     if (target === state.orchestrator) {
       target.pushLine('[skylla] cannot /kill the orchestrator (use the model dropdown or just close skylla)');
