@@ -12,6 +12,8 @@ const mk = (name, model, color, status, lines, ctx, cost) => ({
 
 const state = {
   budget: 10, weekUsd: 3.21, done: false, maxWorkers: 18,
+  pendingPlan: { summary: 'Rewrite module A + tests in parallel', workers: [{ name: 'w5', model: 'opus', task: 'rewrite' }, { name: 'w6', model: 'haiku', task: 'docs' }], estimate_eq: 1.4 },
+  planApproved: false,
   orchestrator: mk('orch', 'claude-fable-5', 'white', 'running', [
     '--- gen 1 · session abc123 ---',
     'Classification: LARGE, 3 workers, parallelizable rewrite.',

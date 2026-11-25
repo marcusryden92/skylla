@@ -22,6 +22,7 @@ let resumeMode = false;
 let resumeRunId = null;
 let useTui = false;
 let host = '127.0.0.1'; // --host 0.0.0.0 (or a LAN/tailscale IP) enables remote + token auth
+let autoApprove = false; // --auto-approve skips the spend gate
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '-C') cwd = resolve(argv[++i]);
   else if (argv[i] === '--budget') budget = parseFloat(argv[++i]);
@@ -29,6 +30,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (argv[i] === '--recycle-at') recycleAt = parseInt(argv[++i], 10);
   else if (argv[i] === '--tui') useTui = true;
   else if (argv[i] === '--host') host = argv[++i];
+  else if (argv[i] === '--auto-approve') autoApprove = true;
   else if (argv[i] === 'resume' && !resumeMode && !task) resumeMode = true;
   else if (resumeMode && !resumeRunId) resumeRunId = argv[i];
   else if (!task) task = argv[i];
@@ -101,6 +103,9 @@ const state = {
   done: false,
   weekUsd: 0,
   layout: null,
+  pendingPlan: null,   // last @@PLAN from the orchestrator, awaiting user approval
+  planApproved: false, // spend gate: spawns are code-blocked until true
+  startedAt: Date.now(),
 };
 const layoutFile = () => join(cwd, '.skylla', 'layout.json');
 try { state.layout = JSON.parse(readFileSync(layoutFile(), 'utf8')); } catch { /* none yet */ }
@@ -167,6 +172,48 @@ if (useTui) {
       spawn(process.execPath, [fileURLToPath(import.meta.url), '-C', dir, '--orch-model', model ?? orchModel],
         { detached: true, stdio: 'ignore' }).unref();
     },
+    // --- diff review: worktree workers only ---
+    onDiff: name => {
+      const w = state.workers.find(x => x.name === name);
+      if (!w || w.cwd === cwd) return { ok: false, text: 'no worktree branch for this worker (spawned without "worktree":true)' };
+      try {
+        const base = git(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+        return { ok: true, text: git(['diff', `${base}...skylla/${name}`]) || '(no changes on branch)' };
+      } catch (e) { return { ok: false, text: String(e.stderr ?? e.message) }; }
+    },
+    onMerge: name => {
+      try {
+        const out = git(['merge', '--no-edit', `skylla/${name}`]);
+        sysToOrch(`User merged skylla/${name} into the main working tree via the dashboard.`);
+        return { ok: true, text: out || 'merged' };
+      } catch (e) {
+        try { git(['merge', '--abort']); } catch { /* nothing to abort */ }
+        sysToOrch(`User tried to merge skylla/${name} but it CONFLICTED and was aborted. Resolve it or assign a worker to.`);
+        return { ok: false, text: 'merge conflicted - aborted:\n' + String(e.stdout ?? '') + String(e.stderr ?? e.message) };
+      }
+    },
+    onDiscard: name => {
+      try {
+        git(['worktree', 'remove', '--force', join(cwd, '.skylla', 'trees', name)]);
+        git(['branch', '-D', `skylla/${name}`]);
+        sysToOrch(`User discarded branch skylla/${name} via the dashboard.`);
+        return { ok: true, text: 'worktree and branch discarded' };
+      } catch (e) { return { ok: false, text: String(e.stderr ?? e.message) }; }
+    },
+    // --- full transcript from the session jsonl on disk ---
+    onTranscript: name => {
+      const w = name === 'orch' ? state.orchestrator : state.workers.find(x => x.name === name);
+      if (!w) return { ok: false, text: 'unknown session' };
+      const dir = join(homedir(), '.claude', 'projects', String(w.cwd).replace(/[^a-zA-Z0-9]/g, '-'));
+      for (const id of [...w.sessionIds].reverse()) {
+        const f = join(dir, `${id}.jsonl`);
+        if (existsSync(f)) {
+          const lines = readFileSync(f, 'utf8').trim().split('\n');
+          return { ok: true, text: lines.slice(-3000).join('\n') };
+        }
+      }
+      return { ok: false, text: 'transcript file not found' };
+    },
     onLayout: tree => {
       state.layout = tree;
       try { writeFileSync(layoutFile(), JSON.stringify(tree)); } catch { /* disk hiccup, layout stays in memory */ }
@@ -202,6 +249,8 @@ async function refreshPlanUsage() {
 refreshPlanUsage();
 setInterval(refreshPlanUsage, 120_000).unref();
 
+const git = args => execFileSync('git', args, { cwd, stdio: 'pipe', maxBuffer: 16 * 1024 * 1024 }).toString();
+
 function sysToOrch(text) {
   // feed enforcement feedback back to the orchestrator
   state.orchestrator?.send(`[system] ${text}`);
@@ -226,6 +275,26 @@ function handleUserInput(text) {
   }
   const mm = text.match(/^\/model\s+(\S+)\s*$/);
   if (mm) return swapModel(target, mm[1].toLowerCase());
+  if (/^\/approve\s*$/.test(text)) {
+    if (!state.pendingPlan) state.orchestrator?.pushLine('[skylla] no plan pending approval');
+    else {
+      state.planApproved = true;
+      state.orchestrator?.pushLine('[skylla] plan APPROVED');
+      sysToOrch('Plan APPROVED by the user. Proceed with the approved spawns.');
+    }
+    return rerender();
+  }
+  const rj = text.match(/^\/reject(?:\s+([\s\S]+))?$/);
+  if (rj) {
+    if (!state.pendingPlan) state.orchestrator?.pushLine('[skylla] no plan pending approval');
+    else {
+      state.pendingPlan = null;
+      state.planApproved = false;
+      state.orchestrator?.pushLine('[skylla] plan REJECTED');
+      sysToOrch(`Plan REJECTED by the user${rj[1] ? `: ${rj[1]}` : ''}. Revise and emit a new @@PLAN.`);
+    }
+    return rerender();
+  }
   if (/^\/(stop|esc)\s*$/.test(text)) { target?.interrupt(); return; }
   if (/^\/status\s*$/.test(text)) {
     target.pushLine(`[skylla] ${target.name}: ${target.model} · gen ${target.generation} · ctx ${target.contextPct}% · $${target.cost.toFixed(2)} · ${target.status} · session ${target.sessionIds.at(-1)?.slice(0, 8) ?? '-'}`);
@@ -270,6 +339,9 @@ function swapModel(target, alias) {
     target.pushLine(`[skylla] unknown model "${alias}" - use haiku | sonnet | opus | fable`);
     return rerender();
   }
+  const gov = governedModel(alias);
+  if (gov !== alias) // user commands are warned, not overridden - the human outranks the governor
+    target.pushLine(`[skylla] heads-up: plan usage is high (governor would pick ${gov}); proceeding with ${alias}`);
   if (target === state.orchestrator) return escalateOrch(`user requested ${alias}`, alias);
   if (resolvePricingLabel(target.model) === alias) {
     target.pushLine(`[skylla] already on ${alias}`);
@@ -306,6 +378,27 @@ setInterval(() => {
   }
 }, 30_000).unref();
 
+// run report card: receipts for what each worker cost vs delivered
+function writeReport(summary) {
+  const mins = ((Date.now() - state.startedAt) / 60_000).toFixed(1);
+  const all = [...state.workers.map(w => ({ ...w, gens: w.generation })), ...state.retired.map(r => ({ ...r, gens: r.generation }))];
+  const rows = all.map(w => `| ${w.name} | ${w.model} | ${w.gens ?? '-'} | $${(w.cost ?? 0).toFixed(2)} | ${w.status} |`);
+  const md = [
+    `# skylla run report`, ``,
+    `- run: ${runId}`,
+    `- duration: ${mins} min`,
+    `- total: ${totalCost().toFixed(2)}eq (budget ${state.budget}eq)`,
+    `- orchestrator: ${state.orchestrator?.model ?? '?'} · $${(state.orchestrator?.cost ?? 0).toFixed(2)} · ${state.orchestrator?.generation ?? 1} gen(s)`,
+    ``,
+    ...(summary ? [`## Summary`, summary, ``] : []),
+    `## Workers`, `| name | model | gens | cost | status |`, `|---|---|---|---|---|`,
+    ...rows, ``,
+  ].join('\n');
+  const file = join(runDir, 'report.md');
+  writeFileSync(file, md);
+  state.orchestrator?.pushLine(`[skylla] report written: ${file}`);
+}
+
 function retireWorker(w) {
   state.retired.push({
     name: w.name, model: w.model, color: w.color, status: 'killed',
@@ -316,13 +409,33 @@ function retireWorker(w) {
   rerender();
 }
 
+// governor: respect the real Max-plan meters when picking models
+const TIERS = ['haiku', 'sonnet', 'opus', 'fable'];
+function governedModel(alias) {
+  const pu = state.planUsage;
+  if (!pu || !TIERS.includes(alias)) return alias;
+  let a = alias;
+  if ((pu.session ?? 0) >= 85 && TIERS.indexOf(a) > 0) a = TIERS[TIERS.indexOf(a) - 1];
+  const fablePct = pu.scoped?.find(s => s.name.includes('fable'))?.percent ?? 0;
+  if (a === 'fable' && fablePct >= 90) a = 'opus';
+  return a;
+}
+
 // --- worker lifecycle ---
 function spawnWorker({ name, model, prompt, worktree }) {
+  if (!state.planApproved)
+    return sysToOrch(`SPAWN rejected: no user-approved plan. Emit @@PLAN and wait for approval.`);
   if (state.workers.some(w => w.name === name)) return sysToOrch(`SPAWN rejected: ${name} already exists. Use @@SEND.`);
   if (state.workers.filter(w => w.proc).length >= state.maxWorkers)
     return sysToOrch(`SPAWN rejected: worker cap (${state.maxWorkers}) reached.`);
   if (totalCost() >= state.budget)
     return sysToOrch(`SPAWN rejected: global budget $${state.budget} exhausted.`);
+
+  const governed = governedModel(model);
+  if (governed !== model) {
+    sysToOrch(`governor: plan usage is high, ${name} downgraded ${model} -> ${governed}.`);
+    model = governed;
+  }
 
   let workCwd = cwd;
   if (worktree) {
@@ -464,8 +577,19 @@ function buildOrchestrator(model) {
           if (w.proc) { w.once('exit', () => retireWorker(w)); w.kill(); }
           else retireWorker(w);
         }
+      } else if (d.kind === 'PLAN') {
+        state.pendingPlan = { summary: d.summary, workers: d.workers ?? [], estimate_eq: d.estimate_eq };
+        if (autoApprove) {
+          state.planApproved = true;
+          sysToOrch('Plan auto-approved (--auto-approve). Proceed.');
+        } else {
+          state.planApproved = false; // a new/changed plan always re-gates
+          sysToOrch('Plan received. The user must approve it - do NOT spawn until you get confirmation.');
+        }
+        rerender();
       } else if (d.kind === 'DONE') {
         state.done = true;
+        writeReport(d.summary);
         saveManifest();
       } else if (d.kind === 'ESCALATE') {
         escalateOrch(`self-reported: ${d.reason ?? 'unspecified'}`);
@@ -534,6 +658,7 @@ function resumeRun(m) {
   o.cost = m.orchestrator?.cost ?? 0;
   o.sessionIds = m.orchestrator?.sessions ?? [];
   o.generation = o.sessionIds.length;
+  state.planApproved = true; // a resumed run was already mid-flight; don't re-gate existing work
   lastTotalForWeekly = totalCost(); // rehydrated spend is already in the weekly tally
   if (o.sessionIds.length) {
     o.resume('[system] skylla was restarted and this run resumed. Workers are reattached but idle; any that died mid-task did not finish. Re-sync: review state, @@SEND continuation prompts to workers that should proceed, respawn from handoffs if a session is broken, or wrap up.');

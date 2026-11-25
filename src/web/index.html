@@ -196,6 +196,80 @@
   #modal-box select:hover, #modal-box button:hover { border-color: #58a6ff; }
   #modal-row { display: flex; gap: 8px; justify-content: flex-end; }
 
+  /* --- spend gate: plan approval bar --- */
+  #planbar {
+    flex: none;
+    margin: 0 8px 4px 8px;
+    border: 1px solid #d29922;
+    background: rgba(210,153,34,.08);
+    border-radius: 8px;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    overflow: hidden;
+  }
+  #planbar[hidden] { display: none; }
+  #planbar .ttl { color: #d29922; font-weight: 700; flex: none; }
+  #planbar .det { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0; }
+  #planbar .est { color: var(--accent); font-weight: 700; flex: none; }
+  #planbar button {
+    flex: none;
+    background: #21262d;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit; font-size: 12px;
+    padding: 4px 14px;
+    cursor: pointer;
+  }
+  #planbar #plan-approve { border-color: #4ade80; color: #4ade80; font-weight: 700; }
+  #planbar button:hover { background: #30363d; }
+
+  /* --- viewer overlay: transcripts + diffs --- */
+  #viewer { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 90; display: flex; }
+  #viewer[hidden] { display: none; }
+  #viewer-box {
+    margin: 4vh 4vw;
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #viewer-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  #viewer-head b { color: var(--accent); }
+  #viewer-head button {
+    background: #21262d; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font: inherit; font-size: 12px; padding: 3px 12px; cursor: pointer;
+  }
+  #viewer-head button:hover { border-color: #58a6ff; }
+  #viewer-head .spacer { flex: 1; }
+  #viewer-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+  }
+  #viewer-body .d-add { color: #4ade80; }
+  #viewer-body .d-del { color: #f87171; }
+  #viewer-body .d-hunk { color: #7ee0ff; }
+  #viewer-body .d-file { color: var(--accent); font-weight: 700; }
+  #viewer-body .t-user { color: #58a6ff; }
+  #viewer-body .t-tool { color: #7ee0ff; }
+  #viewer-body .t-res { color: var(--dim); }
+
   .ctx {
     flex: none;
     height: 3px;
@@ -222,6 +296,8 @@
   .line.tool .tname { color: #7ee0ff; font-weight: 600; }
   .line.sys { color: #d29922; }
   .line.user { color: #58a6ff; font-weight: 600; }
+  .mdcode { background: #21262d; border-radius: 4px; padding: 0 5px; color: #7ee0ff; }
+  .mdhead { font-weight: 700; color: var(--accent); }
   .line.cmd {
     border-left: 3px solid #a371f7;
     background: rgba(163,113,247,.08);
@@ -344,6 +420,24 @@
     <span class="cwd" id="cwd"></span>
   </div>
   <div id="grid" class="none"><div id="drophint" hidden></div></div>
+  <div id="planbar" hidden>
+    <span class="ttl">PLAN</span>
+    <span class="det" id="plan-det"></span>
+    <span class="est" id="plan-est"></span>
+    <button id="plan-approve">Approve</button>
+    <button id="plan-reject">Reject</button>
+  </div>
+  <div id="viewer" hidden>
+    <div id="viewer-box">
+      <div id="viewer-head">
+        <b id="viewer-title"></b>
+        <span class="spacer"></span>
+        <span id="viewer-actions"></span>
+        <button id="viewer-close">Close</button>
+      </div>
+      <div id="viewer-body"></div>
+    </div>
+  </div>
   <div id="statusbar">
     <b>SKYLLA</b>
     <span>run <b id="s-run">0.00</b>eq</span>
@@ -401,14 +495,23 @@ const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 const TOKEN = new URLSearchParams(location.search).get('t');
 const api = p => TOKEN ? p + (p.includes('?') ? '&' : '?') + 't=' + TOKEN : p;
 
+// markdown-lite: enough to make Claude's habitual **bold**, `code`, and # headings readable
+function md(s) {
+  return s
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/`([^`]+)`/g, '<span class="mdcode">$1</span>')
+    .replace(/^(#{1,4})\s+(.*)$/, (_, h, t) => `<span class="mdhead">${t}</span>`)
+    .replace(/^[-*]\s+/, '• ');
+}
+
 function lineHtml(l) {
-  const d = l.match(/^@@(SPAWN|SEND|KILL|DONE|ESCALATE)\s*([\s\S]*)$/);
+  const d = l.match(/^@@(SPAWN|SEND|KILL|DONE|ESCALATE|PLAN)\s*([\s\S]*)$/);
   if (d) return `<div class="line cmd"><span class="cmdname">@@${d[1]}</span> <span class="cmdargs">${esc(d[2])}</span></div>`;
   if (l.startsWith('> ')) return `<div class="line user">${esc(l)}</div>`;
   if (l.startsWith('[skylla]') || l.startsWith('---')) return `<div class="line sys">${esc(l)}</div>`;
   const t = l.match(/^(\[[A-Za-z][^\]]*\])\s?([\s\S]*)$/); // "[ToolName] args"
   if (t) return `<div class="line tool"><span class="tname">${esc(t[1])}</span> ${esc(t[2])}</div>`;
-  return `<div class="line">${esc(l) || '&nbsp;'}</div>`;
+  return `<div class="line">${md(esc(l)) || '&nbsp;'}</div>`;
 }
 
 const panels = new Map(); // name -> { el, body }
@@ -595,6 +698,8 @@ function panelFor(name, container, big) {
         <span class="status"></span>
         <span class="btns">
           <button class="pb pb-id" title="copy session id">id</button>
+          <button class="pb pb-tx" title="full transcript">tx</button>
+          <button class="pb pb-diff" title="branch diff / merge">Δ</button>
           <button class="pb pb-stop" title="interrupt current turn">■</button>
           <button class="pb pb-max" title="maximize (Esc to restore)">⛶</button>
           <button class="pb pb-kill" title="kill worker">✕</button>
@@ -611,6 +716,10 @@ function panelFor(name, container, big) {
       const id = targets().find(t => t.name === name)?.sessions?.at(-1);
       if (id) navigator.clipboard.writeText(id);
     });
+    el.querySelector('.pb-tx').addEventListener('click', () => openTranscript(name));
+    const diffBtn = el.querySelector('.pb-diff');
+    if (name === 'orch') diffBtn.remove();
+    else diffBtn.addEventListener('click', () => openDiff(name));
     el.querySelector('.pb-stop').addEventListener('click', () =>
       fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: `@${name} /stop` }) }));
     const killBtn = el.querySelector('.pb-kill');
@@ -723,8 +832,10 @@ function render(s) {
   renderGutters();
   applyMax();
 
+  renderPlan(s);
   const running = s.workers.filter(w => w.status === 'running').length;
   const totalCost = s.workers.reduce((a, w) => a + w.cost, 0) + (s.orchestrator?.cost ?? 0);
+  notifyTransitions(s, totalCost);
   const totalBurn = s.workers.reduce((a, w) => a + w.burn, 0) + (s.orchestrator?.burn ?? 0);
   document.getElementById('s-run').textContent = totalCost.toFixed(2);
   document.getElementById('s-week').textContent = (s.weekUsd ?? 0).toFixed(2);
@@ -870,9 +981,131 @@ document.getElementById('modal-new').addEventListener('click', () => doOpen('new
 document.getElementById('modal-here').addEventListener('click', () => doOpen('current'));
 document.getElementById('modal-cancel').addEventListener('click', () => { modal.hidden = true; });
 
-// Esc: close modal, else un-maximize
+// --- viewer overlay: transcripts + diffs ---
+const viewer = document.getElementById('viewer');
+const viewerBody = document.getElementById('viewer-body');
+const viewerTitle = document.getElementById('viewer-title');
+const viewerActions = document.getElementById('viewer-actions');
+document.getElementById('viewer-close').addEventListener('click', () => { viewer.hidden = true; });
+
+async function openTranscript(name) {
+  viewerTitle.textContent = `${name} — transcript`;
+  viewerActions.innerHTML = '';
+  viewerBody.textContent = 'loading...';
+  viewer.hidden = false;
+  const r = await (await fetch(api(`/transcript?name=${encodeURIComponent(name)}`))).json();
+  if (!r.ok) { viewerBody.textContent = r.text; return; }
+  const out = [];
+  for (const ln of r.text.split('\n')) {
+    let ev; try { ev = JSON.parse(ln); } catch { continue; }
+    if (ev.type === 'user') {
+      const c = ev.message?.content;
+      if (typeof c === 'string') out.push(`<div class="t-user">&gt; ${md(esc(c))}</div>`);
+      else for (const b of c ?? []) {
+        if (b.type === 'text') out.push(`<div class="t-user">&gt; ${md(esc(b.text))}</div>`);
+        else if (b.type === 'tool_result') {
+          const txt = typeof b.content === 'string' ? b.content : JSON.stringify(b.content);
+          out.push(`<div class="t-res">⇠ ${esc(String(txt).slice(0, 400))}</div>`);
+        }
+      }
+    } else if (ev.type === 'assistant') {
+      for (const b of ev.message?.content ?? []) {
+        if (b.type === 'text' && b.text) out.push(`<div>${md(esc(b.text))}</div>`);
+        else if (b.type === 'tool_use') out.push(`<div class="t-tool">[${esc(b.name)}] ${esc(JSON.stringify(b.input ?? {}).slice(0, 300))}</div>`);
+      }
+    } else if (ev.type === 'result') {
+      out.push(`<div class="t-res">— result: $${ev.total_cost_usd ?? '?'} ${ev.is_error ? '(error)' : ''}</div>`);
+    }
+  }
+  viewerBody.innerHTML = out.join('') || '(empty)';
+  viewerBody.scrollTop = viewerBody.scrollHeight;
+}
+
+function renderDiffText(text) {
+  return text.split('\n').map(l => {
+    const cls = l.startsWith('+++') || l.startsWith('---') || l.startsWith('diff ') ? 'd-file'
+              : l.startsWith('@@') ? 'd-hunk'
+              : l.startsWith('+') ? 'd-add'
+              : l.startsWith('-') ? 'd-del' : '';
+    return `<div class="${cls}">${esc(l) || '&nbsp;'}</div>`;
+  }).join('');
+}
+
+async function openDiff(name) {
+  viewerTitle.textContent = `${name} — branch diff (skylla/${name})`;
+  viewerActions.innerHTML = '';
+  viewerBody.textContent = 'loading...';
+  viewer.hidden = false;
+  const r = await (await fetch(api(`/diff?name=${encodeURIComponent(name)}`))).json();
+  viewerBody.innerHTML = r.ok ? renderDiffText(r.text) : esc(r.text);
+  if (!r.ok) return;
+  const mk = (label, fn) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.addEventListener('click', fn);
+    viewerActions.appendChild(b);
+  };
+  mk('Merge', async () => {
+    if (!confirm(`Merge skylla/${name} into the main working tree?`)) return;
+    const m = await (await fetch(api(`/merge?name=${encodeURIComponent(name)}`), { method: 'POST' })).json();
+    viewerBody.innerHTML = `<div class="${m.ok ? 'd-add' : 'd-del'}">${esc(m.text)}</div>`;
+    viewerActions.innerHTML = '';
+  });
+  mk('Discard', async () => {
+    if (!confirm(`Discard branch skylla/${name} and its worktree? This deletes the worker's changes.`)) return;
+    const m = await (await fetch(api(`/discard?name=${encodeURIComponent(name)}`), { method: 'POST' })).json();
+    viewerBody.innerHTML = `<div class="${m.ok ? 'd-add' : 'd-del'}">${esc(m.text)}</div>`;
+    viewerActions.innerHTML = '';
+  });
+}
+
+// --- spend gate UI ---
+const planbar = document.getElementById('planbar');
+document.getElementById('plan-approve').addEventListener('click', () =>
+  fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: '/approve' }) }));
+document.getElementById('plan-reject').addEventListener('click', () => {
+  const reason = prompt('Reject reason (optional):') ?? '';
+  fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: `/reject ${reason}`.trim() }) });
+});
+function renderPlan(s) {
+  const show = s.pendingPlan && !s.planApproved;
+  planbar.hidden = !show;
+  if (!show) return;
+  const p = s.pendingPlan;
+  const ws = (p.workers ?? []).map(w => `${w.name}:${w.model}`).join('  ');
+  document.getElementById('plan-det').textContent = `${p.summary ?? ''}  —  ${ws}`;
+  document.getElementById('plan-est').textContent = p.estimate_eq != null ? `~${p.estimate_eq}eq` : '';
+}
+
+// --- toasts: fire when something needs you and the window isn't focused ---
+const prevNote = { done: false, budget: false, states: {} };
+function notifyTransitions(s, totalCost) {
+  if (typeof Notification === 'undefined') return;
+  const fire = (t, b) => { if (!document.hasFocus()) try { new Notification(t, { body: b }); } catch { /* no perms */ } };
+  if (s.done && !prevNote.done) fire('skylla: run complete', `total ${totalCost.toFixed(2)}eq`);
+  prevNote.done = s.done;
+  const nearBudget = totalCost > s.budget * 0.8;
+  if (nearBudget && !prevNote.budget) fire('skylla: near budget', `${totalCost.toFixed(2)} of ${s.budget}eq`);
+  prevNote.budget = nearBudget;
+  if (s.pendingPlan && !s.planApproved && prevNote.plan !== JSON.stringify(s.pendingPlan)) {
+    fire('skylla: plan awaiting approval', s.pendingPlan.summary ?? '');
+    prevNote.plan = JSON.stringify(s.pendingPlan);
+  }
+  for (const w of [...(s.orchestrator ? [s.orchestrator] : []), ...s.workers]) {
+    const sig = w.stalled && w.status === 'running' ? 'stalled' : w.status;
+    const prev = prevNote.states[w.name];
+    if (prev && prev !== sig) {
+      if (sig === 'error') fire(`skylla: ${w.name} errored`, w.lines.at(-1) ?? '');
+      if (sig === 'stalled') fire(`skylla: ${w.name} stalled`, 'no activity for 4+ minutes');
+    }
+    prevNote.states[w.name] = sig;
+  }
+}
+
+// Esc: close viewer, else modal, else un-maximize
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
+  if (!viewer.hidden) { viewer.hidden = true; return; }
   if (!modal.hidden) { modal.hidden = true; return; }
   if (maximized) { maximized = null; applyMax(); }
 });

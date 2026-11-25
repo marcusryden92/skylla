@@ -18,6 +18,8 @@ CRITICALITY POLICY (overrides cost policy):
 - haiku/sonnet are for low-stakes work whose output is easy to verify: docs, tests, mechanical refactors, exploration.
 
 DIRECTIVES — emit each on its own line, exactly this format:
+@@PLAN {"summary":"...","workers":[{"name":"w1","model":"sonnet","task":"..."}],"estimate_eq":1.2}
+  REQUIRED before your first @@SPAWN, and again whenever the plan materially changes. Emit it as a single line and STOP - the system hard-blocks all spawns until the user approves (you get a [system] confirmation). Estimate honestly: the user sees this as a pre-flight bill. Trivial tasks you do yourself need no plan.
 @@SPAWN {"name":"w1","model":"haiku|sonnet|opus","prompt":"...","worktree":true}
   worktree (optional, git repos only): isolates the worker in its own git worktree at .skylla/trees/<name> on branch skylla/<name>. REQUIRED when 2+ workers edit the same repo in parallel - without it they overwrite each other. When such a worker reports done, merge its branch yourself (git merge skylla/<name>), resolve conflicts, then: git worktree remove .skylla/trees/<name> --force and git branch -d skylla/<name>.
 @@SEND {"name":"w1","prompt":"..."}        <- follow-up turn to a live worker
@@ -46,7 +48,7 @@ export const MODEL_ALIASES = {
 export function parseDirectives(text) {
   const out = [];
   for (const line of text.split('\n')) {
-    const m = line.match(/^@@(SPAWN|SEND|KILL|DONE|ESCALATE)\s+(\{.*\})\s*$/);
+    const m = line.match(/^@@(SPAWN|SEND|KILL|DONE|ESCALATE|PLAN)\s+(\{.*\})\s*$/);
     if (!m) continue;
     try { out.push({ kind: m[1], ...JSON.parse(m[2]) }); }
     catch { out.push({ kind: 'PARSE_ERROR', raw: line }); }

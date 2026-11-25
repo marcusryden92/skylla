@@ -5,6 +5,8 @@ const path = require('node:path');
 
 const url = process.argv[process.argv.length - 1];
 
+app.setAppUserModelId('skylla'); // required for Windows toast notifications
+
 app.whenReady().then(() => {
   // size to the work area so the taskbar never crops the bottom
   const wa = screen.getPrimaryDisplay().workArea;

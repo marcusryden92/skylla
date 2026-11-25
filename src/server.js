@@ -36,10 +36,12 @@ function snapshot(state) {
     cwd: state.cwd,
     layout: state.layout ?? null,
     planUsage: state.planUsage ?? null,
+    pendingPlan: state.pendingPlan ?? null,
+    planApproved: !!state.planApproved,
   };
 }
 
-export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, host = '127.0.0.1', token = null }) {
+export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, onDiff, onMerge, onDiscard, onTranscript, host = '127.0.0.1', token = null }) {
   const htmlPath = join(dirname(fileURLToPath(import.meta.url)), 'web', 'index.html');
   const clients = new Set();
 
@@ -83,6 +85,14 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
         try { onLayout?.(JSON.parse(body).tree ?? null); } catch { /* ignore */ }
         res.writeHead(204).end();
       });
+    } else if (u.pathname === '/diff' || u.pathname === '/transcript') {
+      const fn = u.pathname === '/diff' ? onDiff : onTranscript;
+      const out = fn?.(u.searchParams.get('name') ?? '') ?? { ok: false, text: 'unavailable' };
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
+    } else if ((u.pathname === '/merge' || u.pathname === '/discard') && req.method === 'POST') {
+      const fn = u.pathname === '/merge' ? onMerge : onDiscard;
+      const out = fn?.(u.searchParams.get('name') ?? '') ?? { ok: false, text: 'unavailable' };
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
     } else if (u.pathname === '/upload' && req.method === 'POST') {
       const name = (u.searchParams.get('name') || 'upload.bin').replace(/[^\w.\- ()]/g, '_').slice(0, 120);
       const target = u.searchParams.get('target') || '';
