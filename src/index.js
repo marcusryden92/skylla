@@ -170,6 +170,12 @@ if (useTui) {
     // "open folder": new window = fresh skylla instance; current = repoint this one
     onOpenFolder: ({ dir, model, mode }) => {
       if (mode === 'current') return openHere(dir, model);
+      if (mode === 'resume' && existsSync(join(resolve(dir), '.skylla', 'runs'))) {
+        // resume latest run in a new window (full resumeRun machinery via CLI path)
+        spawn(process.execPath, [fileURLToPath(import.meta.url), '-C', dir, 'resume'],
+          { detached: true, stdio: 'ignore' }).unref();
+        return;
+      }
       spawn(process.execPath, [fileURLToPath(import.meta.url), '-C', dir, '--orch-model', model ?? orchModel],
         { detached: true, stdio: 'ignore' }).unref();
     },

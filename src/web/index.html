@@ -493,6 +493,7 @@
       </label>
       <div id="modal-row">
         <button id="modal-cancel">Cancel</button>
+        <button id="modal-resume" title="resume the folder's latest run (new window); starts fresh if none">Resume Last Run</button>
         <button id="modal-here">This Window</button>
         <button id="modal-new">New Window</button>
       </div>
@@ -1079,6 +1080,7 @@ function doOpen(mode) {
   modal.hidden = true;
 }
 document.getElementById('modal-new').addEventListener('click', () => doOpen('new'));
+document.getElementById('modal-resume').addEventListener('click', () => doOpen('resume'));
 document.getElementById('modal-here').addEventListener('click', () => doOpen('current'));
 document.getElementById('modal-cancel').addEventListener('click', () => { modal.hidden = true; });
 

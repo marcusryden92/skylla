@@ -75,7 +75,7 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
       req.on('end', () => {
         try {
           const { dir, model, mode } = JSON.parse(body);
-          if (dir) onOpenFolder?.({ dir: String(dir), model: model ? String(model) : null, mode: mode === 'current' ? 'current' : 'new' });
+          if (dir) onOpenFolder?.({ dir: String(dir), model: model ? String(model) : null, mode: ['current', 'resume'].includes(mode) ? mode : 'new' });
         } catch { /* ignore */ }
         res.writeHead(204).end();
       });
