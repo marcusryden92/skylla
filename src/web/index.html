@@ -315,6 +315,17 @@
   .mdhead { font-weight: 700; color: var(--accent); }
   .line.res { color: var(--dim); }
 
+  /* percolating indicator */
+  .thinking { display: flex; gap: 4px; padding: 6px 2px; }
+  .thinking i {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--dim);
+    animation: blip 1.2s infinite;
+  }
+  .thinking i:nth-child(2) { animation-delay: .2s; }
+  .thinking i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blip { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; transform: translateY(-1px); } }
+
   /* shell tile */
   .sh-cmd { margin-top: 6px; }
   .sh-cmd .tag { font-size: 11px; padding: 0 6px; }
@@ -833,7 +844,8 @@ function renderWorker(p, w) {
   if (sel && !sel.isCollapsed && body.contains(sel.anchorNode)) return;
 
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-  const html = w.lines.map(lineHtml).join('');
+  const html = w.lines.map(lineHtml).join('')
+    + (w.status === 'running' ? '<div class="thinking"><i></i><i></i><i></i></div>' : '');
   if (body.dataset.html !== html) {
     body.innerHTML = html;
     body.dataset.html = html;
