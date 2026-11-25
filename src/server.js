@@ -35,6 +35,7 @@ function snapshot(state) {
     maxWorkers: state.maxWorkers,
     cwd: state.cwd,
     layout: state.layout ?? null,
+    planUsage: state.planUsage ?? null,
   };
 }
 

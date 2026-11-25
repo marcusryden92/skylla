@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Worker, COLORS } from './worker.js';
 import { App } from './ui.js';
 import { ORCHESTRATOR_PROMPT, WORKER_PROMPT, MODEL_ALIASES, parseDirectives } from './orchestrator.js';
+import { fetchPlanUsage } from './usage.js';
 
 // --- args ---
 const argv = process.argv.slice(2);
@@ -168,6 +169,14 @@ if (useTui) {
   }
 }
 setInterval(rerender, 1000).unref();
+
+// real Max-plan usage (session/weekly %); null = fall back to eq estimate
+async function refreshPlanUsage() {
+  const u = await fetchPlanUsage();
+  if (u) { state.planUsage = u; rerender(); }
+}
+refreshPlanUsage();
+setInterval(refreshPlanUsage, 120_000).unref();
 
 function sysToOrch(text) {
   // feed enforcement feedback back to the orchestrator

@@ -347,6 +347,7 @@
     <b>SKYLLA</b>
     <span>run <b id="s-run">0.00</b>eq</span>
     <span>week <b id="s-week">0.00</b>eq</span>
+    <span id="s-plan-wrap" hidden>plan <b id="s-plan"></b></span>
     <span>burn <b id="s-burn">0.00</b>/min</span>
     <span>workers <b id="s-workers">0/0</b></span>
     <span>cap <b id="s-cap">0</b>eq</span>
@@ -728,6 +729,19 @@ function render(s) {
   document.getElementById('flag-budget').style.display = totalCost > s.budget * 0.8 ? '' : 'none';
   document.getElementById('flag-done').style.display = s.done ? '' : 'none';
   document.getElementById('cwd').textContent = s.cwd ?? '';
+  const pu = s.planUsage;
+  const planWrap = document.getElementById('s-plan-wrap');
+  planWrap.hidden = !pu;
+  if (pu) {
+    const parts = [];
+    if (pu.session != null) parts.push(`session ${pu.session}%`);
+    if (pu.weekly != null) parts.push(`week ${pu.weekly}%`);
+    for (const sc of pu.scoped ?? []) parts.push(`${sc.name} ${sc.percent}%`);
+    const el = document.getElementById('s-plan');
+    el.textContent = parts.join(' · ');
+    const worst = Math.max(pu.session ?? 0, pu.weekly ?? 0, ...(pu.scoped ?? []).map(x => x.percent));
+    el.style.color = worst >= 90 ? '#f87171' : worst >= 70 ? '#facc15' : '';
+  }
   const sel = document.getElementById('orch-model');
   if (document.activeElement !== sel && s.orchestrator?.label && sel.querySelector(`option[value="${s.orchestrator.label}"]`)) {
     sel.value = s.orchestrator.label;
