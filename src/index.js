@@ -231,8 +231,9 @@ function handleUserInput(text) {
     target.pushLine(`[skylla] ${target.name}: ${target.model} · gen ${target.generation} · ctx ${target.contextPct}% · $${target.cost.toFixed(2)} · ${target.status} · session ${target.sessionIds.at(-1)?.slice(0, 8) ?? '-'}`);
     return rerender();
   }
-  // controlled compaction: handoff -> fresh context, optionally on another model. /pipe = alias.
-  const rc = text.match(/^\/(?:recycle|pipe)(?:\s+(\S+))?\s*$/);
+  // controlled compaction: handoff -> fresh context, optionally on another model.
+  // /handoff is the canonical name; /recycle and /pipe are aliases.
+  const rc = text.match(/^\/(?:handoff|recycle|pipe)(?:\s+(\S+))?\s*$/);
   if (rc) {
     // /recycle fable == /model fable; same-model /recycle falls through to a plain refresh
     if (rc[1] && resolvePricingLabel(target.model) !== rc[1].toLowerCase())
