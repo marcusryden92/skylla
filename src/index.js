@@ -168,16 +168,29 @@ if (useTui) {
     token,
     onInput: handleUserInput,
     // "open folder": new window = fresh skylla instance; current = repoint this one
-    onOpenFolder: ({ dir, model, mode }) => {
+    onOpenFolder: ({ dir, model, mode, runId }) => {
       if (mode === 'current') return openHere(dir, model);
       if (mode === 'resume' && existsSync(join(resolve(dir), '.skylla', 'runs'))) {
-        // resume latest run in a new window (full resumeRun machinery via CLI path)
-        spawn(process.execPath, [fileURLToPath(import.meta.url), '-C', dir, 'resume'],
-          { detached: true, stdio: 'ignore' }).unref();
+        // resume a run (specific or latest) in a new window via the CLI resume path
+        const args = [fileURLToPath(import.meta.url), '-C', dir, 'resume'];
+        if (runId) args.push(runId);
+        spawn(process.execPath, args, { detached: true, stdio: 'ignore' }).unref();
         return;
       }
       spawn(process.execPath, [fileURLToPath(import.meta.url), '-C', dir, '--orch-model', model ?? orchModel],
         { detached: true, stdio: 'ignore' }).unref();
+    },
+    onListRuns: dir => {
+      const runsDir = join(resolve(dir || cwd), '.skylla', 'runs');
+      if (!existsSync(runsDir)) return [];
+      return readdirSync(runsDir)
+        .filter(x => existsSync(join(runsDir, x, 'manifest.json'))).sort().reverse()
+        .map(id => {
+          try {
+            const m = JSON.parse(readFileSync(join(runsDir, id, 'manifest.json'), 'utf8'));
+            return { id, cost: m.totalCost ?? 0, orch: m.orchestrator?.model ?? '?', workers: (m.workers ?? []).filter(w => !w.retired).length };
+          } catch { return { id, cost: 0, orch: '?', workers: 0 }; }
+        });
     },
     // --- diff review: worktree workers only ---
     onDiff: name => {

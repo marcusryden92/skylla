@@ -196,6 +196,32 @@
   #modal-box select:hover, #modal-box button:hover { border-color: #58a6ff; }
   #modal-row { display: flex; gap: 8px; justify-content: flex-end; }
 
+  /* --- runs browser --- */
+  #runsmodal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 100; }
+  #runsmodal[hidden] { display: none; }
+  #runs-box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px; min-width: 520px; max-height: 70vh;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #runs-box h3 { margin: 0; font-size: 14px; color: var(--accent); }
+  #runs-box .dim { color: var(--dim); word-break: break-all; }
+  #runs-list { overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+  .run-row {
+    display: flex; gap: 14px; align-items: center;
+    padding: 7px 12px; border: 1px solid var(--border); border-radius: 6px;
+    cursor: pointer; white-space: nowrap;
+  }
+  .run-row:hover { border-color: #58a6ff; background: #21262d; }
+  .run-row .rid { color: var(--accent); font-weight: 600; }
+  .run-row .dim { flex: none; }
+  .run-row .latest { color: #4ade80; font-size: 11px; margin-left: auto; }
+  #runs-cancel {
+    align-self: flex-end;
+    background: #21262d; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font: inherit; font-size: 12px; padding: 4px 14px; cursor: pointer;
+  }
+
   /* --- spend gate: plan approval bar --- */
   #planbar {
     flex: none;
@@ -519,10 +545,18 @@
       </label>
       <div id="modal-row">
         <button id="modal-cancel">Cancel</button>
-        <button id="modal-resume" title="resume the folder's latest run (new window); starts fresh if none">Resume Last Run</button>
+        <button id="modal-resume" title="browse this folder's runs and resume one (new window)">Browse Runs…</button>
         <button id="modal-here">This Window</button>
         <button id="modal-new">New Window</button>
       </div>
+    </div>
+  </div>
+  <div id="runsmodal" hidden>
+    <div id="runs-box">
+      <h3>Resume a run</h3>
+      <div class="dim" id="runs-dir"></div>
+      <div id="runs-list"></div>
+      <button id="runs-cancel">Cancel</button>
     </div>
   </div>
   <div id="inputbar">
@@ -1129,10 +1163,38 @@ function doOpen(mode) {
   modal.hidden = true;
 }
 document.getElementById('modal-new').addEventListener('click', () => doOpen('new'));
-document.getElementById('modal-resume').addEventListener('click', () => doOpen('resume'));
-// titlebar Resume: latest run of the CURRENT folder, new window
+// --- runs browser: pick any run of a folder to resume (new window) ---
+const runsModal = document.getElementById('runsmodal');
+document.getElementById('runs-cancel').addEventListener('click', () => { runsModal.hidden = true; });
+async function openRunsBrowser(dir) {
+  document.getElementById('runs-dir').textContent = dir;
+  const list = document.getElementById('runs-list');
+  list.innerHTML = '<div class="dim">loading…</div>';
+  runsModal.hidden = false;
+  const runs = await (await fetch(api(`/runs?dir=${encodeURIComponent(dir)}`))).json();
+  if (!runs.length) { list.innerHTML = '<div class="dim">no runs in this folder yet</div>'; return; }
+  list.innerHTML = runs.map((r, i) => `
+    <div class="run-row" data-id="${esc(r.id)}">
+      <span class="rid">${esc(r.id)}</span>
+      <span class="dim">${(r.cost ?? 0).toFixed(2)}eq</span>
+      <span class="dim">${esc(String(r.orch).replace('claude-', '').replace(/-[0-9].*$/, ''))}</span>
+      <span class="dim">${r.workers} worker${r.workers === 1 ? '' : 's'}</span>
+      ${i === 0 ? '<span class="latest">latest</span>' : ''}
+    </div>`).join('');
+  for (const row of list.querySelectorAll('.run-row')) {
+    row.addEventListener('click', () => {
+      fetch(api('/open'), { method: 'POST', body: JSON.stringify({ dir, mode: 'resume', runId: row.dataset.id }) });
+      runsModal.hidden = true;
+    });
+  }
+}
+document.getElementById('modal-resume').addEventListener('click', () => {
+  modal.hidden = true;
+  openRunsBrowser(modalDir);
+});
+// titlebar Resume: browse this folder's runs
 document.getElementById('resume-btn').addEventListener('click', () => {
-  if (lastState?.cwd) fetch(api('/open'), { method: 'POST', body: JSON.stringify({ dir: lastState.cwd, mode: 'resume' }) });
+  if (lastState?.cwd) openRunsBrowser(lastState.cwd);
 });
 document.getElementById('modal-here').addEventListener('click', () => doOpen('current'));
 document.getElementById('modal-cancel').addEventListener('click', () => { modal.hidden = true; });
@@ -1266,6 +1328,7 @@ function notifyTransitions(s, totalCost) {
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   if (!viewer.hidden) { viewer.hidden = true; return; }
+  if (!runsModal.hidden) { runsModal.hidden = true; return; }
   if (!modal.hidden) { modal.hidden = true; return; }
   if (maximized) { maximized = null; applyMax(); }
 });

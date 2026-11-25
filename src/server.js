@@ -45,7 +45,7 @@ function snapshot(state) {
   };
 }
 
-export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, onDiff, onMerge, onDiscard, onTranscript, host = '127.0.0.1', token = null }) {
+export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, onDiff, onMerge, onDiscard, onTranscript, onListRuns, host = '127.0.0.1', token = null }) {
   const htmlPath = join(dirname(fileURLToPath(import.meta.url)), 'web', 'index.html');
   const clients = new Set();
 
@@ -77,8 +77,8 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
       req.on('data', c => { body += c; });
       req.on('end', () => {
         try {
-          const { dir, model, mode } = JSON.parse(body);
-          if (dir) onOpenFolder?.({ dir: String(dir), model: model ? String(model) : null, mode: ['current', 'resume'].includes(mode) ? mode : 'new' });
+          const { dir, model, mode, runId } = JSON.parse(body);
+          if (dir) onOpenFolder?.({ dir: String(dir), model: model ? String(model) : null, mode: ['current', 'resume'].includes(mode) ? mode : 'new', runId: runId ? String(runId) : null });
         } catch { /* ignore */ }
         res.writeHead(204).end();
       });
@@ -89,6 +89,9 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
         try { onLayout?.(JSON.parse(body).tree ?? null); } catch { /* ignore */ }
         res.writeHead(204).end();
       });
+    } else if (u.pathname === '/runs') {
+      const out = onListRuns?.(u.searchParams.get('dir') ?? '') ?? [];
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
     } else if (u.pathname === '/diff' || u.pathname === '/transcript') {
       const fn = u.pathname === '/diff' ? onDiff : onTranscript;
       const out = fn?.(u.searchParams.get('name') ?? '') ?? { ok: false, text: 'unavailable' };
