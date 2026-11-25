@@ -2,6 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#161b22">
 <title>skylla</title>
 <style>
   :root {
@@ -594,6 +598,13 @@ const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 // remote mode: carry the auth token from the URL on every request
 const TOKEN = new URLSearchParams(location.search).get('t');
 const api = p => TOKEN ? p + (p.includes('?') ? '&' : '?') + 't=' + TOKEN : p;
+
+// PWA wiring (dynamic so the manifest/icon URLs carry the auth token)
+for (const [rel, href] of [['manifest', api('/manifest.json')], ['apple-touch-icon', api('/icon.png')]]) {
+  const l = document.createElement('link');
+  l.rel = rel; l.href = href;
+  document.head.appendChild(l);
+}
 
 // markdown-lite: enough to make Claude's habitual **bold**, `code`, and # headings readable
 function md(s) {

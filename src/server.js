@@ -89,6 +89,17 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
         try { onLayout?.(JSON.parse(body).tree ?? null); } catch { /* ignore */ }
         res.writeHead(204).end();
       });
+    } else if (u.pathname === '/manifest.json') {
+      // PWA: Add to Home Screen on a phone -> standalone window, no browser chrome
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+        name: 'skylla', short_name: 'skylla', display: 'standalone',
+        background_color: '#0d1117', theme_color: '#161b22',
+        start_url: token ? `/?t=${token}` : '/',
+        icons: [{ src: token ? `/icon.png?t=${token}` : '/icon.png', sizes: '256x256', type: 'image/png' }],
+      }));
+    } else if (u.pathname === '/icon.png') {
+      res.writeHead(200, { 'content-type': 'image/png' })
+        .end(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'icon.png')));
     } else if (u.pathname === '/runs') {
       const out = onListRuns?.(u.searchParams.get('dir') ?? '') ?? [];
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
