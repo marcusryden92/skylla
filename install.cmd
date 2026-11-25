@@ -4,10 +4,8 @@ cd /d "%~dp0"
 
 where node >nul 2>nul || (echo ERROR: node is required ^(nodejs.org^) & pause & exit /b 1)
 
-if not exist node_modules (
-  echo installing dependencies...
-  where pnpm >nul 2>nul && (call pnpm install) || (call npm install)
-)
+echo installing dependencies...
+where pnpm >nul 2>nul && (call pnpm install) || (call npm install)
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
 
