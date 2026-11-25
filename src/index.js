@@ -2,7 +2,7 @@
 import { mkdirSync, writeFileSync, appendFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Worker, COLORS } from './worker.js';
 import { App } from './ui.js';
@@ -52,6 +52,22 @@ if (resumeMode) {
 }
 mkdirSync(join(runDir, 'handoffs'), { recursive: true });
 
+// mechanical guards for workers: destructive git ops are denied in code, not prompts
+let guardsFile;
+function writeGuards() {
+  guardsFile = join(runDir, 'guards.json');
+  writeFileSync(guardsFile, JSON.stringify({
+    permissions: {
+      deny: [
+        'Bash(git push --force*)', 'Bash(git push -f*)',
+        'Bash(git reset --hard*)', 'Bash(git clean -f*)',
+        'Bash(git branch -D*)', 'Bash(git checkout -- .*)',
+      ],
+    },
+  }));
+}
+writeGuards();
+
 const state = {
   cwd, runDir,
   orchestrator: null,
@@ -63,7 +79,10 @@ const state = {
   recycleAtPct: recycleAt,
   done: false,
   weekUsd: 0,
+  layout: null,
 };
+const layoutFile = () => join(cwd, '.skylla', 'layout.json');
+try { state.layout = JSON.parse(readFileSync(layoutFile(), 'utf8')); } catch { /* none yet */ }
 
 // --- weekly usage tally (API-equivalent $, persisted across runs, ISO-week reset) ---
 const usageFile = join(homedir(), '.skylla-usage.json');
@@ -97,7 +116,7 @@ function saveManifest() {
     workers: [
       ...state.workers.map(w => ({
         name: w.name, model: w.model, color: w.color, status: w.status,
-        cost: w.cost, sessions: w.sessionIds, generation: w.generation,
+        cost: w.cost, sessions: w.sessionIds, generation: w.generation, cwd: w.cwd,
       })),
       ...state.retired,
     ],
@@ -117,10 +136,23 @@ if (useTui) {
   const { broadcast, url } = await startServer({
     state,
     onInput: handleUserInput,
-    // "open folder" = launch a fresh skylla instance in that project dir (own window, own run)
-    onOpenFolder: dir => {
-      spawn(process.execPath, [fileURLToPath(import.meta.url), '-C', dir, '--orch-model', orchModel],
+    // "open folder": new window = fresh skylla instance; current = repoint this one
+    onOpenFolder: ({ dir, model, mode }) => {
+      if (mode === 'current') return openHere(dir, model);
+      spawn(process.execPath, [fileURLToPath(import.meta.url), '-C', dir, '--orch-model', model ?? orchModel],
         { detached: true, stdio: 'ignore' }).unref();
+    },
+    onLayout: tree => {
+      state.layout = tree;
+      try { writeFileSync(layoutFile(), JSON.stringify(tree)); } catch { /* disk hiccup, layout stays in memory */ }
+    },
+    onUpload: (target, name, buf) => {
+      const dir = join(runDir, 'uploads');
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, `${Date.now()}-${name}`);
+      writeFileSync(file, buf);
+      const t = [state.orchestrator, ...state.workers].find(w => w?.name === target) ?? state.orchestrator;
+      t?.send(`The user uploaded a file for you: "${file}". Read it and use it as context for the current task.`);
     },
   });
   rerender = broadcast;
@@ -161,6 +193,15 @@ function handleUserInput(text) {
   }
   const mm = text.match(/^\/model\s+(\S+)\s*$/);
   if (mm) return swapModel(target, mm[1].toLowerCase());
+  if (/^\/kill\s*$/.test(text)) {
+    if (target === state.orchestrator) {
+      target.pushLine('[skylla] cannot /kill the orchestrator (use the model dropdown or just close skylla)');
+      return rerender();
+    }
+    if (target.proc) { target.once('exit', () => retireWorker(target)); target.kill(); }
+    else retireWorker(target);
+    return;
+  }
   target?.send(text);
 }
 
@@ -188,6 +229,24 @@ function swapModel(target, alias) {
 const resolvePricingLabel = model =>
   Object.entries(MODEL_ALIASES).find(([, id]) => model?.startsWith(id))?.[0];
 
+// stall watchdog: a "running" session with no stream events for a while needs eyes on it
+const STALL_MS = 4 * 60_000;
+setInterval(() => {
+  for (const w of [state.orchestrator, ...state.workers]) {
+    if (!w?.proc || w.status !== 'running' || !w.lastActivity) continue;
+    const idle = Date.now() - w.lastActivity;
+    if (idle >= STALL_MS && !w.stallFlagged) {
+      w.stallFlagged = true;
+      w.pushLine(`[skylla] STALLED? no activity for ${Math.round(idle / 60_000)}m`);
+      if (w !== state.orchestrator)
+        sysToOrch(`${w.name} has produced no output for ${Math.round(idle / 60_000)} minutes while running. It may be hung or waiting on something. @@SEND a nudge or @@KILL it.`);
+      rerender();
+    } else if (idle < STALL_MS) {
+      w.stallFlagged = false;
+    }
+  }
+}, 30_000).unref();
+
 function retireWorker(w) {
   state.retired.push({
     name: w.name, model: w.model, color: w.color, status: 'killed',
@@ -199,19 +258,31 @@ function retireWorker(w) {
 }
 
 // --- worker lifecycle ---
-function spawnWorker({ name, model, prompt }) {
+function spawnWorker({ name, model, prompt, worktree }) {
   if (state.workers.some(w => w.name === name)) return sysToOrch(`SPAWN rejected: ${name} already exists. Use @@SEND.`);
   if (state.workers.filter(w => w.proc).length >= state.maxWorkers)
     return sysToOrch(`SPAWN rejected: worker cap (${state.maxWorkers}) reached.`);
   if (totalCost() >= state.budget)
     return sysToOrch(`SPAWN rejected: global budget $${state.budget} exhausted.`);
 
+  let workCwd = cwd;
+  if (worktree) {
+    const tree = join(cwd, '.skylla', 'trees', name);
+    try {
+      execFileSync('git', ['worktree', 'add', tree, '-b', `skylla/${name}`], { cwd, stdio: 'pipe' });
+      workCwd = tree;
+    } catch (e) {
+      return sysToOrch(`SPAWN rejected: worktree failed: ${String(e.stderr ?? e.message).trim().slice(0, 300)}`);
+    }
+  }
+
   const w = new Worker({
     name,
     model: MODEL_ALIASES[model] ?? model,
-    cwd,
+    cwd: workCwd,
     color: COLORS[state.workers.length % COLORS.length],
     systemPrompt: WORKER_PROMPT,
+    settingsFile: guardsFile,
   });
   wireWorker(w);
   state.workers.push(w);
@@ -293,13 +364,17 @@ function escalateOrch(reason, targetAlias) {
   o.send(`[system] You are being ${next ? `replaced by another model (${next})` : 'recycled with fresh context'}: ${reason}. Write a complete orchestrator handoff to "${file}": the user's task, overall plan and progress, every worker (name, model, assignment, status), budget spent, and concrete next steps. Then reply with exactly ===HANDOFF_DONE===`);
 }
 
+const orchSysPrompt = model => ORCHESTRATOR_PROMPT
+  + `\nHard caps: max ${state.maxWorkers} workers, global budget $${state.budget}, per-worker budget $${state.perWorkerBudget}.`
+  + `\nYou are currently running as: ${model}. Tier judgments above refer to this.`;
+
 function buildOrchestrator(model) {
   const o = new Worker({
     name: 'orch',
     model,
     cwd,
     color: 'white',
-    systemPrompt: ORCHESTRATOR_PROMPT + `\nHard caps: max ${state.maxWorkers} workers, global budget $${state.budget}, per-worker budget $${state.perWorkerBudget}.`,
+    systemPrompt: orchSysPrompt(model),
   });
   o.on('update', rerender);
   o.on('text', text => {
@@ -313,6 +388,7 @@ function buildOrchestrator(model) {
         const target = o.pendingModel ?? currentOrchModel();
         o.pendingModel = null;
         o.model = MODEL_ALIASES[target] ?? target;
+        o.systemPrompt = orchSysPrompt(o.model); // keep the "running as" line truthful
         o.start(`You are taking over as SKYLLA orchestrator mid-run. Read your predecessor's handoff at "${handoff}" and continue managing the run from there.`);
         saveManifest();
       });
@@ -348,6 +424,28 @@ function buildOrchestrator(model) {
   return o;
 }
 
+// Reuse this window/process for a different project: tear down the run, start fresh.
+function openHere(dir, model) {
+  for (const w of [state.orchestrator, ...state.workers]) w?.kill();
+  state.workers = [];
+  state.retired = [];
+  state.orchestrator = null;
+  state.done = false;
+  cwd = resolve(dir);
+  state.cwd = cwd;
+  state.layout = null;
+  try { state.layout = JSON.parse(readFileSync(layoutFile(), 'utf8')); } catch { /* none yet */ }
+  if (model) { orchModel = model; orchRung = 0; }
+  runId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  runDir = join(cwd, '.skylla', 'runs', runId);
+  state.runDir = runDir;
+  mkdirSync(join(runDir, 'handoffs'), { recursive: true });
+  writeGuards();
+  lastTotalForWeekly = 0; // new run starts from zero spend
+  task = null;
+  startOrchestrator();
+}
+
 function startOrchestrator() {
   const o = buildOrchestrator(MODEL_ALIASES[currentOrchModel()] ?? currentOrchModel());
   o.start(task ?? 'No initial task given. Greet the user briefly and wait for instructions.');
@@ -364,7 +462,7 @@ function resumeRun(m) {
   // orchestrator decides who actually continues (no uncontrolled restart burst)
   for (const mw of m.workers ?? []) {
     if (mw.retired) { state.retired.push(mw); continue; } // keep cost, no panel
-    const w = new Worker({ name: mw.name, model: mw.model, cwd, color: mw.color, systemPrompt: WORKER_PROMPT });
+    const w = new Worker({ name: mw.name, model: mw.model, cwd: mw.cwd ?? cwd, color: mw.color, systemPrompt: WORKER_PROMPT, settingsFile: guardsFile });
     w.cost = mw.cost ?? 0;
     w.generation = mw.generation ?? 1;
     w.sessionIds = mw.sessions ?? [];

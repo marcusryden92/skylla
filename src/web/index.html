@@ -69,27 +69,45 @@
   #titlebar select:hover { border-color: #58a6ff; }
   #titlebar .lbl { color: var(--dim); font-size: 12px; }
 
-  /* --- orchestrator band --- */
-  #orch {
-    flex: 0 0 30vh;
-    margin: 8px 8px 4px 8px;
-    transition: flex-basis .4s ease;
-    min-height: 0;
-  }
-  /* no workers: let flexbox give the orchestrator all remaining space (no hardcoded vh math) */
-  #orch.solo { flex: 1 1 auto; }
-  #grid:empty { display: none; }
-
-  /* --- worker grid --- */
+  /* --- tiling layout (binary split tree, VS Code style); orchestrator is a tile too --- */
   #grid {
     flex: 1;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-    grid-auto-rows: minmax(140px, 1fr);
-    gap: 8px;
-    margin: 4px 8px;
-    overflow-y: auto;
+    position: relative;
+    margin: 8px;
     min-height: 0;
+    overflow: hidden;
+  }
+  .panel.orchp { border-color: #6e7681; box-shadow: 0 0 0 1px #30363d; }
+  #grid.none { display: none; }
+  #grid .panel { position: absolute; }
+  #grid .panel.ready {
+    transition: left .25s ease, top .25s ease, width .25s ease, height .25s ease;
+  }
+  #grid.dragging .panel, #grid.dragging .gutter { transition: none !important; }
+
+  .gutter { position: absolute; z-index: 10; }
+  .gutter.v { cursor: col-resize; width: 8px; }
+  .gutter.h { cursor: row-resize; height: 8px; }
+  .gutter:hover { background: rgba(88,166,255,.25); border-radius: 4px; }
+
+  #drophint {
+    position: absolute;
+    background: rgba(88,166,255,.22);
+    border: 1px solid #58a6ff;
+    border-radius: 8px;
+    z-index: 20;
+    pointer-events: none;
+  }
+  #drophint[hidden] { display: none; }
+
+  /* maximize: one panel over the whole grid area (Esc or ⛶ to restore) */
+  .panel.max {
+    position: fixed !important;
+    top: 44px !important; left: 8px !important;
+    width: auto !important; height: auto !important;
+    right: 8px; bottom: 104px;
+    z-index: 50;
+    box-shadow: 0 12px 48px rgba(0,0,0,.6);
   }
 
   /* --- panels --- */
@@ -103,7 +121,6 @@
     min-height: 0;
     animation: pop .3s ease;
   }
-  .panel.big { grid-row: span 2; }
   @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.98); } }
   .panel.dead { opacity: .55; }
 
@@ -114,9 +131,12 @@
     padding: 5px 8px;
     border-bottom: 1px solid var(--border);
     flex: none;
-    white-space: nowrap;
     overflow: hidden;
   }
+  .head > * { white-space: nowrap; }
+  /* when space runs out: crop the middle info, never the status/buttons */
+  .head .meta, .head .cost { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .tag, .status, .btns { flex: none; }
   .tag {
     color: #0d1117;
     font-weight: 700;
@@ -128,8 +148,53 @@
   .status { margin-left: auto; color: var(--dim); }
   .status.running { color: #4ade80; }
   .status.running::before { content: "● "; animation: pulse 1.2s infinite; }
-  .status.error, .status.killed { color: #f87171; }
+  .status.error, .status.killed, .status.stalled { color: #f87171; }
   @keyframes pulse { 50% { opacity: .3; } }
+
+  .head { cursor: grab; }
+  .btns { display: flex; gap: 2px; margin-left: 6px; flex: none; }
+  .pb {
+    background: none;
+    border: none;
+    color: var(--dim);
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    padding: 0 4px;
+    border-radius: 4px;
+  }
+  .pb:hover { color: var(--accent); background: #21262d; }
+
+  /* --- open-folder modal --- */
+  #modal {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 100;
+  }
+  #modal[hidden] { display: none; }
+  #modal-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    min-width: 440px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  #modal-box h3 { margin: 0; font-size: 14px; color: var(--accent); }
+  #modal-box .dim { color: var(--dim); word-break: break-all; }
+  #modal-box label { display: flex; align-items: center; gap: 10px; color: var(--dim); }
+  #modal-box select, #modal-box button {
+    background: #21262d;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit; font-size: 12px;
+    padding: 5px 12px;
+    cursor: pointer;
+  }
+  #modal-box select:hover, #modal-box button:hover { border-color: #58a6ff; }
+  #modal-row { display: flex; gap: 8px; justify-content: flex-end; }
 
   .ctx {
     flex: none;
@@ -153,12 +218,26 @@
   }
   .body::-webkit-scrollbar { width: 8px; }
   .body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-  .line.tool { color: #7ee0ff; }
+  .line.tool { color: var(--dim); }
+  .line.tool .tname { color: #7ee0ff; font-weight: 600; }
   .line.sys { color: #d29922; }
   .line.user { color: #58a6ff; font-weight: 600; }
-
-  #orch .panel-inner { height: 100%; }
-  #orch .panel { height: 100%; border: 1px solid #6e7681; box-shadow: 0 0 0 1px #30363d; }
+  .line.cmd {
+    border-left: 3px solid #a371f7;
+    background: rgba(163,113,247,.08);
+    border-radius: 4px;
+    padding: 2px 8px;
+    margin: 2px 0;
+  }
+  .cmdname {
+    color: #0d1117;
+    background: #a371f7;
+    font-weight: 700;
+    font-size: 11px;
+    padding: 0 6px;
+    border-radius: 999px;
+  }
+  .cmdargs { color: var(--dim); }
 
   /* --- status bar + input --- */
   #statusbar {
@@ -184,8 +263,24 @@
     background: var(--bg);
   }
   #inputwrap { position: relative; flex: 1; }
-  #inputbar input {
+  #attach {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--dim);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    z-index: 2;
+  }
+  #attach:hover { color: var(--accent); background: #21262d; }
+  #inputbar input#prompt {
     width: 100%;
+    padding-right: 38px;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -200,7 +295,7 @@
   #mirror {
     position: absolute;
     inset: 0;
-    padding: 8px 12px;
+    padding: 8px 38px 8px 12px;
     border: 1px solid transparent; /* mirror the input's border box exactly */
     color: var(--text);
     white-space: pre;
@@ -247,8 +342,7 @@
     </select>
     <span class="cwd" id="cwd"></span>
   </div>
-  <div id="orch" class="solo"></div>
-  <div id="grid"></div>
+  <div id="grid" class="none"><div id="drophint" hidden></div></div>
   <div id="statusbar">
     <b>SKYLLA</b>
     <span>run <b id="s-run">0.00</b>eq</span>
@@ -260,11 +354,37 @@
     <span id="flag-done">DONE</span>
     <span id="flag-offline">DISCONNECTED</span>
   </div>
+  <div id="modal" hidden>
+    <div id="modal-box">
+      <h3>Open Folder</h3>
+      <div class="dim" id="modal-dir"></div>
+      <label>orchestrator model
+        <select id="modal-model">
+          <option value="auto">auto (ladder)</option>
+          <option value="haiku">haiku</option>
+          <option value="sonnet">sonnet</option>
+          <option value="opus">opus</option>
+          <option value="fable">fable</option>
+        </select>
+      </label>
+      <div id="modal-row">
+        <button id="modal-cancel">Cancel</button>
+        <button id="modal-here">This Window</button>
+        <button id="modal-new">New Window</button>
+      </div>
+    </div>
+  </div>
   <div id="inputbar">
     <div id="inputwrap">
       <div id="suggest"></div>
       <div id="mirror"></div>
       <input id="prompt" placeholder="message the orchestrator — prefix @w1 or @<session-id> to target a worker" autofocus>
+      <button id="attach" title="upload a file (goes to @target or orchestrator)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+        </svg>
+      </button>
+      <input id="fileinput" type="file" multiple hidden>
     </div>
   </div>
 
@@ -276,13 +396,182 @@ const COLOR = {
 const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
 function lineHtml(l) {
-  const cls = l.startsWith('> ') ? 'line user'
-            : l.startsWith('[skylla]') || l.startsWith('---') ? 'line sys'
-            : /^\[[A-Za-z]/.test(l) ? 'line tool' : 'line';
-  return `<div class="${cls}">${esc(l) || '&nbsp;'}</div>`;
+  const d = l.match(/^@@(SPAWN|SEND|KILL|DONE|ESCALATE)\s*([\s\S]*)$/);
+  if (d) return `<div class="line cmd"><span class="cmdname">@@${d[1]}</span> <span class="cmdargs">${esc(d[2])}</span></div>`;
+  if (l.startsWith('> ')) return `<div class="line user">${esc(l)}</div>`;
+  if (l.startsWith('[skylla]') || l.startsWith('---')) return `<div class="line sys">${esc(l)}</div>`;
+  const t = l.match(/^(\[[A-Za-z][^\]]*\])\s?([\s\S]*)$/); // "[ToolName] args"
+  if (t) return `<div class="line tool"><span class="tname">${esc(t[1])}</span> ${esc(t[2])}</div>`;
+  return `<div class="line">${esc(l) || '&nbsp;'}</div>`;
 }
 
 const panels = new Map(); // name -> { el, body }
+
+let maximized = null;
+let dragName = null;
+let pendingDrop = null;
+
+function applyMax() {
+  for (const [n, p] of panels) p.el.classList.toggle('max', n === maximized);
+}
+function toggleMax(name) {
+  maximized = maximized === name ? null : name;
+  applyMax();
+}
+
+// --- tiling layout: binary split tree { type:'split', dir:'row'|'col', ratio, a, b } | { type:'leaf', name } ---
+let tree = null;
+let treeLoaded = false;
+const mkLeaf = name => ({ type: 'leaf', name });
+
+function* leavesOf(node) {
+  if (!node) return;
+  if (node.type === 'leaf') yield node;
+  else { yield* leavesOf(node.a); yield* leavesOf(node.b); }
+}
+function removeLeaf(node, name) {
+  if (!node) return null;
+  if (node.type === 'leaf') return node.name === name ? null : node;
+  node.a = removeLeaf(node.a, name);
+  node.b = removeLeaf(node.b, name);
+  if (!node.a) return node.b;
+  if (!node.b) return node.a;
+  return node;
+}
+function computeRects(node, rect, out) {
+  if (!node) return out;
+  if (node.type === 'leaf') { out[node.name] = rect; return out; }
+  const r = node.ratio ?? .5;
+  if (node.dir === 'row') {
+    computeRects(node.a, { x: rect.x, y: rect.y, w: rect.w * r, h: rect.h }, out);
+    computeRects(node.b, { x: rect.x + rect.w * r, y: rect.y, w: rect.w * (1 - r), h: rect.h }, out);
+  } else {
+    computeRects(node.a, { x: rect.x, y: rect.y, w: rect.w, h: rect.h * r }, out);
+    computeRects(node.b, { x: rect.x, y: rect.y + rect.h * r, w: rect.w, h: rect.h * (1 - r) }, out);
+  }
+  return out;
+}
+// importance: orchestrator heaviest, then by model tier
+const weightOf = w => w.name === 'orch' ? 4 : w.mult >= 1.5 ? 3 : w.mult >= 1 ? 2 : 1;
+
+// new worker: split the largest tile; direction follows its aspect; share follows weight
+function insertWorker(w, ws) {
+  if (!tree) { tree = mkLeaf(w.name); return; }
+  const rects = computeRects(tree, { x: 0, y: 0, w: 100, h: 100 }, {});
+  let best = null, bestArea = -1;
+  for (const l of leavesOf(tree)) {
+    const r = rects[l.name];
+    const area = (r?.w ?? 0) * (r?.h ?? 0);
+    if (area > bestArea) { bestArea = area; best = l; }
+  }
+  const gw = grid.clientWidth || 1600, gh = grid.clientHeight || 800;
+  const r = rects[best.name];
+  const dir = (r.w / 100 * gw) >= (r.h / 100 * gh) ? 'row' : 'col';
+  const wOld = weightOf(ws.find(x => x.name === best.name) ?? { mult: 1 });
+  const ratio = Math.min(.75, Math.max(.25, wOld / (wOld + weightOf(w))));
+  const old = { ...best };
+  Object.assign(best, { type: 'split', dir, ratio, a: old, b: mkLeaf(w.name) });
+  delete best.name;
+}
+function syncLayout(ws) {
+  const names = new Set(ws.map(w => w.name));
+  let changed = false;
+  for (const l of [...leavesOf(tree)]) {
+    if (!names.has(l.name)) { tree = removeLeaf(tree, l.name); changed = true; }
+  }
+  const have = new Set([...leavesOf(tree)].map(l => l.name));
+  for (const w of ws) {
+    if (!have.has(w.name)) { insertWorker(w, ws); have.add(w.name); changed = true; }
+  }
+  if (changed) saveLayout();
+}
+let saveTimer = null;
+function saveLayout() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() =>
+    fetch('/layout', { method: 'POST', body: JSON.stringify({ tree }) }), 400);
+}
+
+// VS Code style: drop a panel on another's left/right/top/bottom half to split that space
+function applyDrop(src, { target, side }) {
+  if (src === target) return;
+  tree = removeLeaf(tree, src);
+  const t = [...leavesOf(tree)].find(l => l.name === target);
+  if (!t) { tree = tree ? { type: 'split', dir: 'row', ratio: .5, a: tree, b: mkLeaf(src) } : mkLeaf(src); }
+  else {
+    const old = { ...t };
+    const dir = side === 'left' || side === 'right' ? 'row' : 'col';
+    const first = side === 'left' || side === 'top';
+    Object.assign(t, { type: 'split', dir, ratio: .5, a: first ? mkLeaf(src) : old, b: first ? old : mkLeaf(src) });
+    delete t.name;
+  }
+  saveLayout();
+  if (lastState) render(lastState);
+}
+
+const dropHint = () => document.getElementById('drophint');
+function showDropHint(el, side) {
+  const g = grid.getBoundingClientRect(), r = el.getBoundingClientRect();
+  const hint = dropHint();
+  let { left, top, width, height } = { left: r.left - g.left, top: r.top - g.top, width: r.width, height: r.height };
+  if (side === 'left') width /= 2;
+  else if (side === 'right') { left += width / 2; width /= 2; }
+  else if (side === 'top') height /= 2;
+  else { top += height / 2; height /= 2; }
+  Object.assign(hint.style, { left: left + 'px', top: top + 'px', width: width + 'px', height: height + 'px' });
+  hint.hidden = false;
+}
+
+function renderGutters() {
+  for (const el of grid.querySelectorAll('.gutter')) el.remove();
+  if (!tree) return;
+  (function walk(node, rect) {
+    if (!node || node.type === 'leaf') return;
+    const r = node.ratio ?? .5;
+    let ra, rb;
+    const el = document.createElement('div');
+    if (node.dir === 'row') {
+      ra = { x: rect.x, y: rect.y, w: rect.w * r, h: rect.h };
+      rb = { x: rect.x + rect.w * r, y: rect.y, w: rect.w * (1 - r), h: rect.h };
+      el.className = 'gutter v';
+      el.style.left = `calc(${rect.x + rect.w * r}% - 4px)`;
+      el.style.top = rect.y + '%';
+      el.style.height = rect.h + '%';
+    } else {
+      ra = { x: rect.x, y: rect.y, w: rect.w, h: rect.h * r };
+      rb = { x: rect.x, y: rect.y + rect.h * r, w: rect.w, h: rect.h * (1 - r) };
+      el.className = 'gutter h';
+      el.style.top = `calc(${rect.y + rect.h * r}% - 4px)`;
+      el.style.left = rect.x + '%';
+      el.style.width = rect.w + '%';
+    }
+    el.addEventListener('mousedown', e => startGutterDrag(e, node, rect));
+    grid.appendChild(el);
+    walk(node.a, ra);
+    walk(node.b, rb);
+  })(tree, { x: 0, y: 0, w: 100, h: 100 });
+}
+
+function startGutterDrag(e, node, rect) {
+  e.preventDefault();
+  grid.classList.add('dragging');
+  const move = ev => {
+    const g = grid.getBoundingClientRect();
+    const ratio = node.dir === 'row'
+      ? ((ev.clientX - g.left) / g.width * 100 - rect.x) / rect.w
+      : ((ev.clientY - g.top) / g.height * 100 - rect.y) / rect.h;
+    node.ratio = Math.min(.85, Math.max(.15, ratio));
+    if (lastState) render(lastState);
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    grid.classList.remove('dragging');
+    saveLayout();
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
 
 function panelFor(name, container, big) {
   let p = panels.get(name);
@@ -291,21 +580,68 @@ function panelFor(name, container, big) {
     const el = document.createElement('div');
     el.className = 'panel';
     el.innerHTML = `
-      <div class="head">
+      <div class="head" draggable="true">
         <span class="tag"></span>
         <span class="meta"></span>
         <span class="cost"></span>
         <span class="meta ctxpct"></span>
         <span class="meta burn"></span>
         <span class="status"></span>
+        <span class="btns">
+          <button class="pb pb-id" title="copy session id">id</button>
+          <button class="pb pb-max" title="maximize (Esc to restore)">⛶</button>
+          <button class="pb pb-kill" title="kill worker">✕</button>
+        </span>
       </div>
       <div class="ctx"><div></div></div>
       <div class="body"></div>`;
     container.appendChild(el);
+
+    const head = el.querySelector('.head');
+    el.querySelector('.pb-max').addEventListener('click', () => toggleMax(name));
+    head.addEventListener('dblclick', e => { if (!e.target.closest('.pb')) toggleMax(name); });
+    el.querySelector('.pb-id').addEventListener('click', () => {
+      const id = targets().find(t => t.name === name)?.sessions?.at(-1);
+      if (id) navigator.clipboard.writeText(id);
+    });
+    const killBtn = el.querySelector('.pb-kill');
+    if (name === 'orch') killBtn.remove();
+    else killBtn.addEventListener('click', () => {
+      if (confirm(`Kill ${name}? Panel is removed; cost is kept.`))
+        fetch('/send', { method: 'POST', body: JSON.stringify({ text: `@${name} /kill` }) });
+    });
+
+    // drag onto another panel's half to split that space (workers only)
+    if (container === grid) {
+      head.addEventListener('dragstart', () => { dragName = name; });
+      head.addEventListener('dragend', () => { dragName = null; pendingDrop = null; dropHint().hidden = true; });
+      el.addEventListener('dragover', e => {
+        if (!dragName || dragName === name) return;
+        e.preventDefault();
+        const r = el.getBoundingClientRect();
+        const rx = (e.clientX - r.left) / r.width, ry = (e.clientY - r.top) / r.height;
+        const side = Math.min(rx, 1 - rx) < Math.min(ry, 1 - ry)
+          ? (rx < .5 ? 'left' : 'right')
+          : (ry < .5 ? 'top' : 'bottom');
+        pendingDrop = { target: name, side };
+        showDropHint(el, side);
+      });
+      el.addEventListener('dragleave', e => {
+        if (!el.contains(e.relatedTarget)) dropHint().hidden = true;
+      });
+      el.addEventListener('drop', e => {
+        if (!dragName || !pendingDrop || pendingDrop.target !== name) return;
+        e.preventDefault();
+        e.stopPropagation();
+        applyDrop(dragName, pendingDrop);
+        dragName = null; pendingDrop = null;
+        dropHint().hidden = true;
+      });
+    }
+
     p = { el, body: el.querySelector('.body') };
     panels.set(name, p);
   }
-  p.el.classList.toggle('big', !!big);
   return p;
 }
 
@@ -320,12 +656,17 @@ function renderWorker(p, w) {
   el.querySelector('.burn').textContent = w.burn > 0 ? `$${w.burn.toFixed(2)}/m` : '';
   el.querySelector('.burn').style.color = w.burn > 1 ? '#f87171' : '';
   const st = el.querySelector('.status');
-  st.textContent = w.status;
-  st.className = `status ${w.status}`;
+  const stalled = w.stalled && w.status === 'running';
+  st.textContent = stalled ? 'stalled' : w.status;
+  st.className = `status ${stalled ? 'stalled' : w.status}`;
   const bar = el.querySelector('.ctx > div');
   bar.style.width = `${w.contextPct}%`;
   bar.style.background = w.contextPct > 50 ? '#facc15' : '#4ade80';
   el.classList.toggle('dead', w.status === 'done' || w.status === 'killed' || w.status === 'error');
+
+  // don't clobber an in-progress text selection (copy/paste from panels)
+  const sel = document.getSelection();
+  if (sel && !sel.isCollapsed && body.contains(sel.anchorNode)) return;
 
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
   const html = w.lines.map(lineHtml).join('');
@@ -336,24 +677,42 @@ function renderWorker(p, w) {
   }
 }
 
-const orchBox = document.getElementById('orch');
 const grid = document.getElementById('grid');
 let lastState = null;
 
 function render(s) {
   lastState = s;
-  orchBox.classList.toggle('solo', s.workers.length === 0);
+  const tiles = [...(s.orchestrator ? [s.orchestrator] : []), ...s.workers];
+  grid.classList.toggle('none', tiles.length === 0);
 
-  if (s.orchestrator) renderWorker(panelFor('orch', orchBox), s.orchestrator);
+  // first snapshot: adopt the server-persisted layout for this project
+  if (!treeLoaded) { tree = s.layout ?? null; treeLoaded = true; }
+  syncLayout(tiles);
+  const rects = computeRects(tree, { x: 0, y: 0, w: 100, h: 100 }, {});
 
-  const alive = new Set(['orch']);
-  for (const w of s.workers) {
+  const alive = new Set();
+  for (const w of tiles) {
     alive.add(w.name);
-    renderWorker(panelFor(w.name, grid, w.mult >= 1.5), w); // opus/fable panels span 2 rows
+    const p = panelFor(w.name, grid);
+    if (w.name === 'orch') p.el.classList.add('orchp');
+    renderWorker(p, w);
+    const r = rects[w.name];
+    if (r) {
+      p.el.style.left = `calc(${r.x}% + 3px)`;
+      p.el.style.top = `calc(${r.y}% + 3px)`;
+      p.el.style.width = `calc(${r.w}% - 6px)`;
+      p.el.style.height = `calc(${r.h}% - 6px)`;
+      if (!p.el.dataset.laid) {
+        p.el.dataset.laid = '1';
+        requestAnimationFrame(() => p.el.classList.add('ready')); // no transition on first placement
+      }
+    }
   }
   for (const [name, p] of panels) {
-    if (!alive.has(name)) { p.el.remove(); panels.delete(name); }
+    if (!alive.has(name)) { p.el.remove(); panels.delete(name); if (maximized === name) maximized = null; }
   }
+  renderGutters();
+  applyMax();
 
   const running = s.workers.filter(w => w.status === 'running').length;
   const totalCost = s.workers.reduce((a, w) => a + w.cost, 0) + (s.orchestrator?.cost ?? 0);
@@ -461,15 +820,72 @@ document.getElementById('orch-model').addEventListener('change', e => {
 });
 
 // Open Folder: Electron-only (needs the native directory picker).
-// Launches a fresh skylla instance in the chosen project dir, own window + run.
+// Picker -> modal: choose model + new window or reuse this one.
 const openBtn = document.getElementById('open-folder');
+const modal = document.getElementById('modal');
+let modalDir = null;
 if (window.skylla) {
   openBtn.hidden = false;
   openBtn.addEventListener('click', async () => {
     const dir = await window.skylla.pickFolder();
-    if (dir) fetch('/open', { method: 'POST', body: JSON.stringify({ dir }) });
+    if (!dir) return;
+    modalDir = dir;
+    document.getElementById('modal-dir').textContent = dir;
+    // default to whatever this window's orchestrator is currently running
+    document.getElementById('modal-model').value = document.getElementById('orch-model').value || 'auto';
+    modal.hidden = false;
   });
 }
+function doOpen(mode) {
+  fetch('/open', { method: 'POST', body: JSON.stringify({
+    dir: modalDir, model: document.getElementById('modal-model').value, mode,
+  })});
+  modal.hidden = true;
+}
+document.getElementById('modal-new').addEventListener('click', () => doOpen('new'));
+document.getElementById('modal-here').addEventListener('click', () => doOpen('current'));
+document.getElementById('modal-cancel').addEventListener('click', () => { modal.hidden = true; });
+
+// Esc: close modal, else un-maximize
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!modal.hidden) { modal.hidden = true; return; }
+  if (maximized) { maximized = null; applyMax(); }
+});
+
+// --- file/image upload: drop on a panel to target that worker, paste into the input ---
+function uploadFile(f, target) {
+  fetch(`/upload?name=${encodeURIComponent(f.name || 'pasted.png')}&target=${encodeURIComponent(target === 'orch' ? '' : (target || ''))}`,
+    { method: 'POST', body: f });
+}
+document.addEventListener('dragover', e => {
+  if ([...(e.dataTransfer?.types ?? [])].includes('Files')) e.preventDefault();
+});
+document.addEventListener('drop', e => {
+  if (!e.dataTransfer?.files?.length) return;
+  e.preventDefault();
+  const pEl = e.target.closest?.('.panel');
+  let target = '';
+  if (pEl) for (const [n, p] of panels) if (p.el === pEl) target = n;
+  for (const f of e.dataTransfer.files) uploadFile(f, target);
+});
+// attach button: picker -> upload to @target (or orchestrator)
+const fileInput = document.getElementById('fileinput');
+document.getElementById('attach').addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+  const m = input.value.match(/^@(\S+)/);
+  for (const f of fileInput.files) uploadFile(f, m?.[1] ?? '');
+  fileInput.value = '';
+  input.focus();
+});
+
+input.addEventListener('paste', e => {
+  const files = e.clipboardData?.files;
+  if (!files?.length) return;
+  e.preventDefault();
+  const m = input.value.match(/^@(\S+)/); // pasted while targeting @w1 -> upload goes to w1
+  for (const f of files) uploadFile(f, m?.[1] ?? '');
+});
 </script>
 </body>
 </html>

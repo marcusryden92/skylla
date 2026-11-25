@@ -12,9 +12,10 @@ export const COLORS = ['cyan', 'green', 'yellow', 'magenta', 'blue', 'red'];
 let nextWorkerNum = 1;
 
 export class Worker extends EventEmitter {
-  constructor({ name, model, cwd, color, systemPrompt, permissionMode }) {
+  constructor({ name, model, cwd, color, systemPrompt, permissionMode, settingsFile }) {
     super();
     this.permissionMode = permissionMode;
+    this.settingsFile = settingsFile;
     this.name = name ?? `w${nextWorkerNum++}`;
     this.model = model;
     this.cwd = cwd;
@@ -82,6 +83,7 @@ export class Worker extends EventEmitter {
     ];
     if (this.model) args.push('--model', this.model);
     if (this.systemPrompt) args.push('--append-system-prompt', this.systemPrompt);
+    if (this.settingsFile) args.push('--settings', this.settingsFile); // mechanical guards (deny rules)
 
     const env = { ...process.env };
     delete env.CLAUDECODE; // allow spawning workers even when skylla itself was started from inside a Claude Code session
@@ -131,6 +133,7 @@ export class Worker extends EventEmitter {
   }
 
   onEvent(ev) {
+    this.lastActivity = Date.now(); // any stream event counts as liveness
     if (ev.type === 'system' && ev.subtype === 'init') {
       this.model = ev.model ?? this.model;
     } else if (ev.type === 'assistant') {
@@ -146,7 +149,7 @@ export class Worker extends EventEmitter {
           for (const l of block.text.split('\n')) this.pushLine(l);
           this.emit('text', block.text);
         } else if (block.type === 'tool_use') {
-          this.pushLine(`[${block.name}] ${summarizeInput(block.input)}`);
+          this.pushLine(`[${block.name}] ${summarizeInput(block.input, this.cwd)}`);
         }
       }
     } else if (ev.type === 'result') {
@@ -173,8 +176,19 @@ export class Worker extends EventEmitter {
   }
 }
 
-function summarizeInput(input) {
+// One readable line per tool call instead of a JSON dump.
+function summarizeInput(input, cwd) {
   if (!input) return '';
-  const s = input.command ?? input.file_path ?? input.pattern ?? input.prompt ?? JSON.stringify(input);
-  return String(s).slice(0, 80);
+  let s = input.command ?? input.file_path ?? input.notebook_path ?? input.pattern
+       ?? input.url ?? input.query ?? input.description ?? input.prompt ?? '';
+  if (!s) { // unknown tool: show its first field compactly
+    const k = Object.keys(input)[0];
+    if (k) s = `${k}: ${typeof input[k] === 'string' ? input[k] : JSON.stringify(input[k])}`;
+  }
+  s = String(s).replace(/\s+/g, ' ').trim();
+  // project-relative paths read far better than C:\Users\...\project\...
+  if (cwd && s.toLowerCase().startsWith(String(cwd).toLowerCase())) {
+    s = s.slice(String(cwd).length).replace(/^[\\/]/, '');
+  }
+  return s.slice(0, 100);
 }

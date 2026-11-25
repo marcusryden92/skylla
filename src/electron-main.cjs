@@ -1,6 +1,6 @@
 // Electron shell: one dark window pointed at skylla's local dashboard server.
 // Launched by src/index.js as: electron electron-main.cjs <url>
-const { app, BrowserWindow, ipcMain, dialog, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, screen, Menu } = require('electron');
 const path = require('node:path');
 
 const url = process.argv[process.argv.length - 1];
@@ -20,6 +20,13 @@ app.whenReady().then(() => {
   ipcMain.handle('pick-folder', async () => {
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
     return r.canceled ? null : r.filePaths[0];
+  });
+  // right-click menu: cut/copy/paste in the input, copy on selected panel text
+  win.webContents.on('context-menu', (_e, params) => {
+    const items = params.isEditable
+      ? [{ role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { type: 'separator' }, { role: 'selectAll' }]
+      : params.selectionText ? [{ role: 'copy' }] : [];
+    if (items.length) Menu.buildFromTemplate(items).popup();
   });
   win.loadURL(url);
 });

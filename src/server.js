@@ -13,6 +13,7 @@ function serializeWorker(w) {
     model: w.model,
     color: w.color,
     status: w.status,
+    stalled: !!w.stallFlagged,
     cost: w.cost,
     contextPct: w.contextPct,
     burn: w.burnPerMin,
@@ -33,10 +34,11 @@ function snapshot(state) {
     done: state.done,
     maxWorkers: state.maxWorkers,
     cwd: state.cwd,
+    layout: state.layout ?? null,
   };
 }
 
-export function startServer({ state, onInput, onOpenFolder }) {
+export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout }) {
   const htmlPath = join(dirname(fileURLToPath(import.meta.url)), 'web', 'index.html');
   const clients = new Set();
 
@@ -61,8 +63,33 @@ export function startServer({ state, onInput, onOpenFolder }) {
       let body = '';
       req.on('data', c => { body += c; });
       req.on('end', () => {
-        try { const dir = String(JSON.parse(body).dir ?? ''); if (dir) onOpenFolder?.(dir); } catch { /* ignore */ }
+        try {
+          const { dir, model, mode } = JSON.parse(body);
+          if (dir) onOpenFolder?.({ dir: String(dir), model: model ? String(model) : null, mode: mode === 'current' ? 'current' : 'new' });
+        } catch { /* ignore */ }
         res.writeHead(204).end();
+      });
+    } else if (req.url === '/layout' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try { onLayout?.(JSON.parse(body).tree ?? null); } catch { /* ignore */ }
+        res.writeHead(204).end();
+      });
+    } else if (req.url.startsWith('/upload') && req.method === 'POST') {
+      const u = new URL(req.url, 'http://localhost');
+      const name = (u.searchParams.get('name') || 'upload.bin').replace(/[^\w.\- ()]/g, '_').slice(0, 120);
+      const target = u.searchParams.get('target') || '';
+      const chunks = [];
+      let size = 0;
+      req.on('data', c => {
+        size += c.length;
+        if (size > 50 * 1024 * 1024) { req.destroy(); return; } // 50MB cap
+        chunks.push(c);
+      });
+      req.on('end', () => {
+        try { onUpload?.(target, name, Buffer.concat(chunks)); res.writeHead(204).end(); }
+        catch { res.writeHead(500).end(); }
       });
     } else {
       // re-read each request so tweaking the html needs no restart
