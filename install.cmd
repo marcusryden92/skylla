@@ -16,6 +16,13 @@ if errorlevel 1 (
 echo installing dependencies...
 where pnpm >nul 2>nul && (call pnpm install) || (call npm install)
 
+where claude >nul 2>nul
+if errorlevel 1 (
+  echo installing Claude Code CLI...
+  where pnpm >nul 2>nul && (call pnpm add -g @anthropic-ai/claude-code) || (call npm install -g @anthropic-ai/claude-code)
+  echo NOTE: run "claude" once in a new terminal to log in before using skylla.
+)
+
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
 
 echo.
