@@ -87,6 +87,7 @@ export class Worker extends EventEmitter {
       '--permission-prompt-tool', 'stdio', // tools outside the mode prompt via control_request instead of auto-deny
     ];
     if (this.model) args.push('--model', this.model);
+    if (this.effort) args.push('--effort', this.effort);
     if (this.systemPrompt) args.push('--append-system-prompt', this.systemPrompt);
     if (this.settingsFile) args.push('--settings', this.settingsFile); // mechanical guards (deny rules)
 
@@ -182,6 +183,15 @@ export class Worker extends EventEmitter {
       } else {
         this.pushLine(`[skylla] mode ${mode} refused: ${ev.response.error ?? 'unknown error'} (staying in ${this.effectiveMode})`);
       }
+    } else if (ev.type === 'control_response' && this.modelRequests?.has(ev.response?.request_id)) {
+      const model = this.modelRequests.get(ev.response.request_id);
+      this.modelRequests.delete(ev.response.request_id);
+      if (ev.response.subtype === 'success') {
+        this.model = model;
+        this.pushLine(`[skylla] now on ${model} (conversation kept)`);
+      } else {
+        this.pushLine(`[skylla] model switch refused: ${ev.response.error ?? 'unknown error'}`);
+      }
     } else if (ev.type === 'control_request' && ev.request?.subtype === 'can_use_tool') {
       const req = { id: ev.request_id, tool: ev.request.tool_name, input: ev.request.input ?? {} };
       (this.permRequests ??= []).push(req);
@@ -193,6 +203,7 @@ export class Worker extends EventEmitter {
       }
       this.status = ev.is_error ? 'error' : 'idle'; // idle = session alive, awaiting next turn
       this.emit('result', ev);
+      if (this.effortRestartPending && this.proc) this.restartForEffort();
     }
     this.emit('update');
   }
@@ -218,6 +229,40 @@ export class Worker extends EventEmitter {
     }) + '\n');
     this.pushLine(`[skylla] ${allow ? 'allowed' : 'denied'}: [${req.tool}]`);
     this.emit('update');
+  }
+
+  // Effort is a launch flag, so changing it reopens the same session with
+  // --resume (conversation kept). Mid-turn, it waits for the turn to finish.
+  setEffort(level) {
+    this.effort = level;
+    if (!this.proc || !this.sessionIds.length) return;
+    if (this.status === 'running') {
+      this.effortRestartPending = true;
+      this.pushLine(`[skylla] effort ${level} applies when this turn finishes`);
+      return;
+    }
+    this.restartForEffort();
+  }
+
+  restartForEffort() {
+    this.effortRestartPending = false;
+    this.once('exit', () => {
+      try { this.resume(); this.pushLine(`[skylla] now at effort ${this.effort} (conversation kept)`); }
+      catch (e) { this.pushLine(`[skylla] effort change failed: ${e.message}`); }
+      this.emit('update');
+    });
+    this.status = 'idle';
+    this.proc.kill();
+  }
+
+  // Switch model on the live session, keeping the whole conversation (CLI set_model).
+  setModel(model) {
+    if (!this.proc) { this.model = model; return; }
+    const id = `model-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    (this.modelRequests ??= new Map()).set(id, model);
+    this.proc.stdin.write(JSON.stringify({
+      type: 'control_request', request_id: id, request: { subtype: 'set_model', model },
+    }) + '\n');
   }
 
   // Switch permission mode on the live session; also used for the next launch.

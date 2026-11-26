@@ -152,11 +152,11 @@ function saveManifest() {
   writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
     runId, cwd, budget: state.budget, permMode, totalCost: totalCost(),
     orchestrator: state.orchestrator && {
-      sessions: state.orchestrator.sessionIds, model: state.orchestrator.model, cost: state.orchestrator.cost,
+      sessions: state.orchestrator.sessionIds, model: state.orchestrator.model, cost: state.orchestrator.cost, effort: state.orchestrator.effort,
     },
     workers: [
       ...state.workers.map(w => ({
-        name: w.name, model: w.model, color: w.color, status: w.status,
+        name: w.name, model: w.model, color: w.color, status: w.status, effort: w.effort,
         cost: w.cost, sessions: w.sessionIds, generation: w.generation, cwd: w.cwd,
       })),
       ...state.retired,
@@ -390,6 +390,20 @@ function handleUserInput(text) {
     else target.respondPermission(perm[1] === 'allow');
     return rerender();
   }
+  const ef = text.match(/^\/effort(?:\s+(\S+))?\s*$/);
+  if (ef) {
+    const level = ef[1]?.toLowerCase();
+    if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(level)) {
+      target.pushLine(`[skylla] effort is ${target.effort ?? 'default'}. Use /effort low | medium | high | xhigh | max`);
+    } else if (level === target.effort) {
+      target.pushLine(`[skylla] already at effort ${level}`);
+    } else {
+      target.pushLine(`[skylla] setting effort to ${level}`);
+      target.setEffort(level);
+      saveManifest();
+    }
+    return rerender();
+  }
   const pm = text.match(/^\/mode(?:\s+(\S+))?\s*$/);
   if (pm) {
     const mode = pm[1] && PERM_MODES[pm[1].toLowerCase()];
@@ -417,7 +431,7 @@ function handleUserInput(text) {
   if (rc) {
     // /recycle fable == /model fable; same-model /recycle falls through to a plain refresh
     if (rc[1] && resolvePricingLabel(target.model) !== rc[1].toLowerCase())
-      return swapModel(target, rc[1].toLowerCase());
+      return swapModel(target, rc[1].toLowerCase(), { fresh: true });
     if (target === state.orchestrator) escalateOrch('user requested recycle', currentOrchModel());
     else if (target.proc) { target.pushLine('[skylla] manual recycle via handoff'); requestHandoff(target); }
     else { target.pushLine('[skylla] not running - nothing to recycle'); rerender(); }
@@ -463,7 +477,9 @@ function looksLikeHandoff(text) {
     && !/\bhand ?off (file|doc|note)s?\b/.test(t);
 }
 
-function swapModel(target, alias) {
+// /model X: switch the live session, conversation kept.
+// fresh (/handoff X): handoff to a new session on X - cheaper on a big context.
+function swapModel(target, alias, { fresh = false } = {}) {
   if (!target) return;
   if (!MODEL_ALIASES[alias]) {
     target.pushLine(`[skylla] unknown model "${alias}" - use haiku | sonnet | opus | fable`);
@@ -472,9 +488,19 @@ function swapModel(target, alias) {
   const gov = governedModel(alias);
   if (gov !== alias) // user commands are warned, not overridden - the human outranks the governor
     target.pushLine(`[skylla] heads-up: plan usage is high (governor would pick ${gov}); proceeding with ${alias}`);
-  if (target === state.orchestrator) return escalateOrch(`user requested ${alias}`, alias);
-  if (resolvePricingLabel(target.model) === alias) {
+  if (resolvePricingLabel(target.model) === alias && !fresh) {
     target.pushLine(`[skylla] already on ${alias}`);
+    return rerender();
+  }
+  if (target === state.orchestrator) {
+    if (fresh) return escalateOrch(`user requested ${alias}`, alias);
+    if (orchModel === 'auto') { const r = ORCH_LADDER.indexOf(alias); if (r >= 0) orchRung = r; } else orchModel = alias;
+    target.systemPrompt = orchSysPrompt(MODEL_ALIASES[alias]); // truthful "running as" on the next launch
+  }
+  if (!fresh) {
+    target.pushLine(`[skylla] switching to ${alias}, keeping the conversation`);
+    target.setModel(MODEL_ALIASES[alias]);
+    saveManifest();
     return rerender();
   }
   if (!target.proc) { // session not live: just retarget the next generation
@@ -803,7 +829,7 @@ function buildOrchestrator(model) {
 // either start a new run (model of choice) or resume one, in any folder.
 //   action 'new'    -> fresh run, orchestrator on `model` (haiku|sonnet|opus|fable|auto), optional first task
 //   action 'resume' -> run `runId` in that folder, or its latest when omitted
-function startFromLauncher({ dir, model, action = 'new', runId: pickRun, task: firstTask } = {}) {
+function startFromLauncher({ dir, model, effort, action = 'new', runId: pickRun, task: firstTask } = {}) {
   const nextCwd = normDir(dir || cwd);
   let manifest = null, resumeId = null;
   if (action === 'resume') {
@@ -846,14 +872,15 @@ function startFromLauncher({ dir, model, action = 'new', runId: pickRun, task: f
   } else {
     lastTotalForWeekly = 0; // new run starts from zero spend
     task = firstTask?.trim() || null;
-    startOrchestrator();
+    startOrchestrator(effort);
   }
   rerender();
   return { ok: true };
 }
 
-function startOrchestrator() {
+function startOrchestrator(effort) {
   const o = buildOrchestrator(MODEL_ALIASES[currentOrchModel()] ?? currentOrchModel());
+  if (effort) o.effort = effort;
   o.start(task ?? 'No initial task given. Greet the user briefly and wait for instructions.');
 }
 
@@ -870,6 +897,7 @@ function resumeRun(m) {
   for (const mw of m.workers ?? []) {
     if (mw.retired) { state.retired.push(mw); continue; } // keep cost, no panel
     const w = new Worker({ name: mw.name, model: mw.model, cwd: mw.cwd ?? cwd, color: mw.color, systemPrompt: WORKER_PROMPT, settingsFile: guardsFile, permissionMode: permMode });
+    w.effort = mw.effort;
     w.cost = mw.cost ?? 0;
     w.generation = mw.generation ?? 1;
     w.sessionIds = mw.sessions ?? [];
@@ -881,6 +909,7 @@ function resumeRun(m) {
   const o = buildOrchestrator(m.orchestrator?.model ?? (MODEL_ALIASES[currentOrchModel()] ?? currentOrchModel()));
   o.cost = m.orchestrator?.cost ?? 0;
   o.sessionIds = m.orchestrator?.sessions ?? [];
+  o.effort = m.orchestrator?.effort;
   o.generation = o.sessionIds.length;
   state.planApproved = true; // a resumed run was already mid-flight; don't re-gate existing work
   lastTotalForWeekly = totalCost(); // rehydrated spend is already in the weekly tally

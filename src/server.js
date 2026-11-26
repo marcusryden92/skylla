@@ -22,6 +22,7 @@ function serializeWorker(w) {
     burn: w.burnPerMin,
     generation: w.generation,
     sessions: w.sessionIds ?? [],
+    effort: w.effort ?? null,
     perm: w.permRequests?.[0]
       ? { tool: w.permRequests[0].tool, detail: JSON.stringify(w.permRequests[0].input ?? {}).slice(0, 160), more: w.permRequests.length - 1 }
       : null,
@@ -133,13 +134,14 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
       req.on('end', () => {
         let out = { ok: false, text: 'bad request' };
         try {
-          const { dir, model, action, runId, task } = JSON.parse(body);
+          const { dir, model, action, runId, task, effort } = JSON.parse(body);
           out = onStart?.({
             dir: dir ? String(dir) : null,
             model: ['haiku', 'sonnet', 'opus', 'fable', 'auto'].includes(model) ? model : null,
             action: action === 'resume' ? 'resume' : 'new',
             runId: runId ? String(runId) : null,
             task: task ? String(task) : null,
+            effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : null,
           }) ?? { ok: false, text: 'unavailable' };
         } catch (e) { out = { ok: false, text: String(e.message ?? e) }; }
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));

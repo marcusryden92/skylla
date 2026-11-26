@@ -495,6 +495,30 @@
     z-index: 2;
   }
   #attach:hover { color: var(--accent); background: #21262d; }
+  /* model/effort switcher for the targeted session, left of the paperclip */
+  #modelbtn {
+    position: absolute; right: 38px; bottom: 5px; z-index: 2;
+    background: #21262d; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--dim); font: inherit; font-size: 12px; padding: 2px 8px; cursor: pointer; white-space: nowrap;
+  }
+  #modelbtn:hover, #modelbtn.open { color: var(--accent); border-color: #58a6ff; }
+  #modelmenu {
+    position: absolute; right: 30px; bottom: calc(100% + 6px); z-index: 20;
+    min-width: 230px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: flex; flex-direction: column; gap: 6px;
+  }
+  #modelmenu[hidden] { display: none; }
+  #modelmenu .mm-title { color: var(--text); font-weight: 700; padding: 0 4px; }
+  #modelmenu .mm-sec { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; padding: 4px 4px 0; }
+  #modelmenu .mm-row { display: flex; flex-wrap: wrap; gap: 4px; }
+  #modelmenu .mm-opt {
+    background: #21262d; border: 1px solid var(--border); border-radius: 5px; color: var(--text);
+    font: inherit; font-size: 12px; padding: 3px 9px; cursor: pointer;
+  }
+  #modelmenu .mm-opt:hover { border-color: #58a6ff; }
+  #modelmenu .mm-opt.cur { border-color: #58a6ff; background: #1f2d3d; color: #58a6ff; font-weight: 700; }
+  #modelmenu label { display: flex; gap: 6px; align-items: center; color: var(--dim); font-size: 12px; padding: 0 4px; cursor: pointer; }
+  #modelmenu .mm-hint { color: var(--dim); font-size: 11px; padding: 0 4px; }
   #inputbar textarea#prompt {
     display: block;
     width: 100%;
@@ -680,6 +704,8 @@
       <div id="suggest"></div>
       <div id="mirror"></div>
       <textarea id="prompt" rows="1" placeholder="message the orchestrator — prefix @w1 or @<session-id> to target a worker · Shift+Enter for a new line" autofocus></textarea>
+      <button id="modelbtn" title="switch model / effort for the targeted session"></button>
+      <div id="modelmenu" hidden></div>
       <button id="attach" title="upload a file (goes to @target or orchestrator)">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
@@ -1140,6 +1166,7 @@ function render(s) {
   document.getElementById('cwd').textContent = s.cwd ?? '';
   if (s.cwd && s.cwd !== trustCheckedCwd) { trustCheckedCwd = s.cwd; ensureTrust(s.cwd); }
   renderLauncher(s);
+  if (typeof updateModelBtn === 'function') updateModelBtn();
   const pu = s.planUsage;
   const planWrap = document.getElementById('s-plan-wrap');
   planWrap.hidden = !pu;
@@ -1343,6 +1370,7 @@ function setLauncherModel(m) {
   launcherModel = m;
   try { localStorage.setItem('skylla.launcherModel', m); } catch { /* no storage */ }
   for (const b of document.querySelectorAll('#l-models [data-m]')) b.classList.toggle('sel', b.dataset.m === m);
+  if (typeof updateModelBtn === 'function') updateModelBtn();
   if (lastState?.launcher) input.placeholder = 'type your first task and press Enter to start a new run on ' + m;
 }
 for (const b of document.querySelectorAll('#l-models [data-m]')) b.addEventListener('click', () => setLauncherModel(b.dataset.m));
@@ -1374,7 +1402,7 @@ async function loadLauncherRuns() {
 
 async function launch(opts) {
   try {
-    const r = await (await fetch(api('/start'), { method: 'POST', body: JSON.stringify({ dir: launcherDir, model: launcherModel, ...opts }) })).json();
+    const r = await (await fetch(api('/start'), { method: 'POST', body: JSON.stringify({ dir: launcherDir, model: launcherModel, effort: launcherEffort, ...opts }) })).json();
     if (!r.ok) alert(r.text ?? 'could not start');
   } catch { alert('could not reach skylla'); }
 }
@@ -1669,6 +1697,97 @@ input.addEventListener('paste', e => {
   const m = input.value.match(/^@(\S+)/); // pasted while targeting @w1 -> upload goes to w1
   for (const f of files) uploadFile(f, m?.[1] ?? '');
 });
+
+// --- model / effort switcher (button left of the paperclip) ---
+// Acts on the @target in the input (or the orchestrator); on the start screen it
+// picks the model/effort for the new run instead.
+const modelBtn = document.getElementById('modelbtn');
+const modelMenu = document.getElementById('modelmenu');
+const MODELS = ['haiku', 'sonnet', 'opus', 'fable'];
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+let launcherEffort = null;
+try { launcherEffort = localStorage.getItem('skylla.launcherEffort') || null; } catch { /* no storage */ }
+let freshSwitch = false;
+
+function switchTarget() {
+  if (lastState?.launcher) return null;
+  const m = input.value.match(/^@(\S+)/);
+  const all = targets();
+  if (m) {
+    const tok = m[1].toLowerCase();
+    const t = all.find(t => t.name.toLowerCase() === tok || (t.sessions ?? []).some(id => id.toLowerCase().startsWith(tok)));
+    if (t) return t;
+  }
+  return lastState?.orchestrator ?? null;
+}
+
+function updateModelBtn() {
+  let label;
+  if (lastState?.launcher) label = launcherModel + (launcherEffort ? ' · ' + launcherEffort : '');
+  else {
+    const t = switchTarget();
+    if (!t) { modelBtn.hidden = true; fitInputPadding(); return; }
+    label = (t.label ?? '?') + (t.effort ? ' · ' + t.effort : '');
+  }
+  modelBtn.hidden = false;
+  if (modelBtn.textContent !== label + ' ▾') { modelBtn.textContent = label + ' ▾'; fitInputPadding(); }
+}
+
+// keep typed text clear of the two buttons; #mirror must wrap identically
+function fitInputPadding() {
+  const pad = (modelBtn.hidden ? 0 : modelBtn.offsetWidth + 8) + 38;
+  input.style.paddingRight = pad + 'px';
+  mirror.style.paddingRight = pad + 'px';
+  autosize();
+}
+
+function renderModelMenu() {
+  const launcher = !!lastState?.launcher;
+  const t = switchTarget();
+  const curModel = launcher ? launcherModel : t?.label;
+  const curEffort = launcher ? launcherEffort : t?.effort;
+  const title = launcher ? 'New run' : (t?.name ?? '?') + ' · ' + (t?.label ?? '?');
+  const opts = (list, cur, kind) => list.map(v =>
+    '<button class="mm-opt' + (v === cur ? ' cur' : '') + '" data-kind="' + kind + '" data-v="' + v + '">' + v + '</button>').join('');
+  modelMenu.innerHTML =
+    '<div class="mm-title">' + esc(title) + '</div>'
+    + '<div class="mm-sec">Model</div><div class="mm-row">' + opts(launcher ? [...MODELS.slice(1), 'auto'] : MODELS, curModel, 'model') + '</div>'
+    + (launcher ? '' : '<label><input type="checkbox" id="mm-fresh"' + (freshSwitch ? ' checked' : '') + '> fresh session (handoff) instead of keeping the conversation</label>')
+    + '<div class="mm-sec">Effort</div><div class="mm-row">' + opts(EFFORTS, curEffort, 'effort') + '</div>'
+    + (launcher ? '' : '<div class="mm-hint">Effort reopens the same session; the conversation is kept.</div>');
+  modelMenu.querySelector('#mm-fresh')?.addEventListener('change', e => { freshSwitch = e.target.checked; });
+  for (const b of modelMenu.querySelectorAll('.mm-opt')) b.addEventListener('click', () => pickModelOpt(b.dataset.kind, b.dataset.v));
+}
+
+function pickModelOpt(kind, v) {
+  closeModelMenu();
+  if (lastState?.launcher) {
+    if (kind === 'model') setLauncherModel(v);
+    else {
+      launcherEffort = launcherEffort === v ? null : v; // click again = back to default
+      try { launcherEffort ? localStorage.setItem('skylla.launcherEffort', launcherEffort) : localStorage.removeItem('skylla.launcherEffort'); } catch { /* no storage */ }
+    }
+    return updateModelBtn();
+  }
+  const t = switchTarget();
+  if (!t) return;
+  const cmd = kind === 'model' ? (freshSwitch ? '/handoff ' : '/model ') + v : '/effort ' + v;
+  fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: '@' + t.name + ' ' + cmd }) });
+}
+
+function closeModelMenu() { modelMenu.hidden = true; modelBtn.classList.remove('open'); }
+modelBtn.addEventListener('mousedown', e => e.preventDefault()); // keep focus in the input
+modelBtn.addEventListener('click', () => {
+  if (!modelMenu.hidden) return closeModelMenu();
+  renderModelMenu();
+  modelMenu.hidden = false;
+  modelBtn.classList.add('open');
+});
+document.addEventListener('mousedown', e => {
+  if (!modelMenu.hidden && !modelMenu.contains(e.target) && e.target !== modelBtn) closeModelMenu();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !modelMenu.hidden) closeModelMenu(); });
+input.addEventListener('input', updateModelBtn);
 </script>
 </body>
 </html>

@@ -45,7 +45,8 @@ Messages go to the orchestrator by default. Prefix `@name` or
 
 | command | effect |
 |---|---|
-| `/model <m>` | swap that session's model via handoff-recycle |
+| `/model <m>` | switch that session's model, keeping the conversation (also the model button next to the paperclip) |
+| `/effort <level>` | low · medium · high · xhigh · max; reopens the same session, conversation kept |
 | `/handoff [m]` | controlled compaction: handoff file → fresh context, optionally on another model (aliases: `/recycle`, `/pipe`) |
 | `/clear` | hard context reset, no handoff (workers only) |
 | `/stop` (`/esc`) | interrupt the current turn; session stays alive |
