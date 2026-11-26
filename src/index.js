@@ -317,13 +317,51 @@ if (useTui) {
 }
 setInterval(rerender, 1000).unref();
 
-// real Max-plan usage (session/weekly %); null = fall back to eq estimate
+// Real plan usage. Session (5h) and week (7d) come live from the sessions'
+// rate_limit_event (sent with every API call). The per-model weekly meters
+// (e.g. fable) only exist on the usage endpoint, which rate-limits hard, so it
+// is polled with backoff and its age is shown instead of silently going stale.
+function applyRateLimit(info) {
+  const win = info.unifiedWindows ?? {};
+  const pct = w => (typeof w?.utilization === 'number' ? Math.round(w.utilization * 100) : null);
+  const pu = state.planUsage ?? {};
+  state.planUsage = {
+    ...pu,
+    session: pct(win.five_hour) ?? pu.session ?? null,
+    weekly: pct(win.seven_day) ?? pu.weekly ?? null,
+    sessionResetsAt: win.five_hour?.resetsAt ? win.five_hour.resetsAt * 1000 : pu.sessionResetsAt,
+    weeklyResetsAt: win.seven_day?.resetsAt ? win.seven_day.resetsAt * 1000 : pu.weeklyResetsAt,
+    status: info.status ?? pu.status, // allowed | allowed_warning | rejected
+    liveAt: Date.now(),
+  };
+  rerender();
+}
+
+let usageBackoff = 0;
 async function refreshPlanUsage() {
   const u = await fetchPlanUsage();
-  if (u) { state.planUsage = u; rerender(); }
+  if (u && !u.error) {
+    usageBackoff = 0;
+    const pu = state.planUsage ?? {};
+    const liveFresh = pu.liveAt && Date.now() - pu.liveAt < 10 * 60_000;
+    state.planUsage = {
+      ...pu,
+      // the live stream wins for session/week; the endpoint fills in when no session has run lately
+      session: liveFresh ? pu.session : u.session,
+      weekly: liveFresh ? pu.weekly : u.weekly,
+      scoped: u.scoped,
+      scopedAt: Date.now(),
+      ...(liveFresh ? {} : { liveAt: null, endpointAt: Date.now() }),
+    };
+    rerender();
+  } else if (u?.error === 429) {
+    usageBackoff = Math.min(usageBackoff + 1, 4);
+  }
+  // 2 min normally; 4/8/16/30 min while rate limited
+  const next = u?.error === 429 ? Math.min(2 ** usageBackoff * 2, 30) : 2;
+  setTimeout(refreshPlanUsage, next * 60_000).unref();
 }
 refreshPlanUsage();
-setInterval(refreshPlanUsage, 120_000).unref();
 
 const git = args => execFileSync('git', args, { cwd, stdio: 'pipe', maxBuffer: 16 * 1024 * 1024 }).toString();
 
@@ -631,6 +669,7 @@ function recordShell(w) {
 }
 
 function wireWorker(w) {
+  w.on('ratelimit', applyRateLimit);
   w.on('update', rerender);
   recordShell(w);
   w.on('text', text => {
@@ -754,6 +793,7 @@ function buildOrchestrator(model) {
     permissionMode: permMode,
   });
   o.on('update', rerender);
+  o.on('ratelimit', applyRateLimit);
   recordShell(o);
   o.on('text', text => {
     appendFileSync(join(runDir, 'orch.log'), text + '\n---\n');

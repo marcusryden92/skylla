@@ -18,7 +18,7 @@ export async function fetchPlanUsage() {
       },
       signal: AbortSignal.timeout(5000),
     });
-    if (!r.ok) return null;
+    if (!r.ok) return { error: r.status }; // 429 = rate limited: caller backs off
     const d = await r.json();
     const limits = d.limits ?? [];
     return {
@@ -31,6 +31,6 @@ export async function fetchPlanUsage() {
       fetchedAt: Date.now(),
     };
   } catch {
-    return null; // offline, token missing/expired, or endpoint changed shape
+    return { error: 'network' }; // offline, or endpoint changed shape
   }
 }

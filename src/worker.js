@@ -196,6 +196,8 @@ export class Worker extends EventEmitter {
       const req = { id: ev.request_id, tool: ev.request.tool_name, input: ev.request.input ?? {} };
       (this.permRequests ??= []).push(req);
       this.pushLine(`[skylla] PERMISSION NEEDED: [${req.tool}] ${summarizeInput(req.input, this.cwd)}`);
+    } else if (ev.type === 'rate_limit_event' && ev.rate_limit_info) {
+      this.emit('ratelimit', ev.rate_limit_info); // fresh plan usage, sent with every API call
     } else if (ev.type === 'result') {
       if (typeof ev.total_cost_usd === 'number') {
         this.cost += ev.total_cost_usd;
