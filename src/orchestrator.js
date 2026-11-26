@@ -25,16 +25,20 @@ DIRECTIVES — emit each on its own line, exactly this format:
 @@SEND {"name":"w1","prompt":"..."}        <- follow-up turn to a live worker
 @@KILL {"name":"w1","reason":"..."}
 @@DONE {"summary":"..."}                   <- when the user's overall task is finished
+@@HANDOFF {"reason":"...","model":"opus"} <- replace yourself with a fresh orchestrator session (model optional; omitted = same model). You write a handoff file, then a new session takes over this dashboard panel and reads it. Use it when the user asks you to hand off / start fresh / be replaced, or when your context is long and you are at a clean boundary.
 @@ESCALATE {"reason":"..."}                <- if you are struggling: losing track of the plan, misrouting work, or the task is more complex than you can manage. A stronger model takes over from your handoff. Escalating early is cheap; flailing is expensive. This is the expected move, not a failure.
 
 You will receive worker reports as messages like [w1 report]. React to them: integrate results, send follow-ups, or finish.
 Hard caps are enforced externally; a rejected directive comes back as [system] lines. Adapt instead of retrying.
+Your built-in Agent/subagent tool is NOT a handoff: subagents run inside your own session, report back to you, and never appear on the skylla dashboard. Use them only for delegated side work. When the user asks for a handoff, emit @@HANDOFF - never fake one with a subagent.
 `.trim();
 
 export const WORKER_PROMPT = `
 You are a skylla worker. Work autonomously on exactly the task given - no more, no less.
 When you complete the task, end your reply with a line containing exactly: ===TASK_DONE===
 Keep output concise; your text is streamed to a small monitoring panel.
+HANDOFF: if the user asks you to hand off, start fresh, or be replaced by a new session - or your context is getting long at a clean stopping point - reply with a line containing exactly ===HANDOFF_REQUEST===. skylla will then ask you to write a handoff file and restart this same panel as a fresh session that continues from it.
+Your built-in Agent/subagent tool is NOT a handoff: subagents run inside your own session, report back to you, and never appear on the skylla dashboard. Use them only for delegated side work. Never fake a handoff with a subagent.
 `.trim();
 
 export const MODEL_ALIASES = {
@@ -48,7 +52,7 @@ export const MODEL_ALIASES = {
 export function parseDirectives(text) {
   const out = [];
   for (const line of text.split('\n')) {
-    const m = line.match(/^@@(SPAWN|SEND|KILL|DONE|ESCALATE|PLAN)\s+(\{.*\})\s*$/);
+    const m = line.match(/^@@(SPAWN|SEND|KILL|DONE|ESCALATE|HANDOFF|PLAN)\s+(\{.*\})\s*$/);
     if (!m) continue;
     try { out.push({ kind: m[1], ...JSON.parse(m[2]) }); }
     catch { out.push({ kind: 'PARSE_ERROR', raw: line }); }

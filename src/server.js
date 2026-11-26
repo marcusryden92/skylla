@@ -28,6 +28,8 @@ function serializeWorker(w) {
     lines: w.lines.slice(-300),
     label: resolvePricing(w.model)?.label ?? w.model ?? '?',
     mult: multiplier(w.model),
+    mode: w.effectiveMode ?? null,
+    wantMode: w.permissionMode ?? null,
   };
 }
 
@@ -40,6 +42,7 @@ function snapshot(state) {
     done: state.done,
     maxWorkers: state.maxWorkers,
     cwd: state.cwd,
+    permMode: state.permMode ?? 'acceptEdits',
     layout: state.layout ?? null,
     planUsage: state.planUsage ?? null,
     pendingPlan: state.pendingPlan ?? null,
@@ -49,7 +52,7 @@ function snapshot(state) {
   };
 }
 
-export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, onDiff, onMerge, onDiscard, onTranscript, onListRuns, onRemote, host = '127.0.0.1', port = 0, token = null }) {
+export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, onDiff, onMerge, onDiscard, onTranscript, onListRuns, onRemote, onTrust, isTrusted, host = '127.0.0.1', port = 0, token = null }) {
   const htmlPath = join(dirname(fileURLToPath(import.meta.url)), 'web', 'index.html');
   const clients = new Set();
 
@@ -111,6 +114,17 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
     } else if (u.pathname === '/icon.png') {
       res.writeHead(200, { 'content-type': 'image/png' })
         .end(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'icon.png')));
+    } else if (u.pathname === '/trust' && req.method === 'GET') {
+      const dir = u.searchParams.get('dir') ?? '';
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ trusted: !!isTrusted?.(dir) }));
+    } else if (u.pathname === '/trust' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        let out = { trusted: false };
+        try { out = onTrust?.(String(JSON.parse(body).dir ?? '')) ?? out; } catch { /* unreadable config */ }
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
+      });
     } else if (u.pathname === '/runs') {
       const out = onListRuns?.(u.searchParams.get('dir') ?? '') ?? [];
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));

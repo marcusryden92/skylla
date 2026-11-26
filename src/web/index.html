@@ -45,6 +45,7 @@
     overflow: hidden;
   }
   #titlebar b { color: var(--accent); letter-spacing: 2px; }
+  #titlebar .logo { width: 18px; height: 18px; flex: none; margin-right: -4px; }
   #titlebar .cwd { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
   #titlebar button {
     -webkit-app-region: no-drag;
@@ -71,13 +72,14 @@
     outline: none;
   }
   #titlebar select:hover { border-color: #58a6ff; }
+  #titlebar select.danger { border-color: #f87171; color: #f87171; }
   #titlebar .lbl { color: var(--dim); font-size: 12px; }
 
   /* --- tiling layout (binary split tree, VS Code style); orchestrator is a tile too --- */
   #grid {
     flex: 1;
     position: relative;
-    margin: 8px;
+    margin: 8px 8px 5px; /* tiles stop 3px short of the grid edge: 5+3 = the 8px gap below the input */
     min-height: 0;
     overflow: hidden;
   }
@@ -336,6 +338,19 @@
   .line.tool .tname { color: #7ee0ff; font-weight: 600; }
   .line.sys { color: #d29922; }
   .line.user { color: #58a6ff; font-weight: 600; margin: 8px 0 4px; }
+  /* latest user message, pinned over the top of the body once scrolled past */
+  .pin {
+    position: absolute; left: 0; right: 8px; z-index: 3;
+    padding: 4px 10px 5px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 4px 8px -4px rgba(0,0,0,.6);
+    color: #58a6ff; font-weight: 600; line-height: 1.45;
+    white-space: pre-wrap; word-break: break-word;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+    cursor: pointer;
+  }
+  .pin[hidden] { display: none; }
   .line.user.chunky { display: flex; align-items: flex-start; gap: 6px; }
   .msgtoggle {
     flex: none;
@@ -447,8 +462,7 @@
   #attach {
     position: absolute;
     right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
+    bottom: 5px; /* stays on the last row as the box grows */
     background: none;
     border: none;
     color: var(--dim);
@@ -459,27 +473,37 @@
     z-index: 2;
   }
   #attach:hover { color: var(--accent); background: #21262d; }
-  #inputbar input#prompt {
+  #inputbar textarea#prompt {
+    display: block;
     width: 100%;
-    padding-right: 38px;
+    resize: none;
+    overflow-y: hidden;           /* grows instead; scrolls only past max-height */
+    max-height: 40vh;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 6px;
     color: transparent;           /* text rendered by #mirror so @target can be colored */
     caret-color: var(--text);
     font: inherit;
-    padding: 8px 12px;
+    padding: 8px 38px 8px 12px;
     outline: none;
+    scrollbar-width: none;        /* a scrollbar would shift wrapping vs #mirror */
   }
-  #inputbar input:focus { border-color: #58a6ff; }
-  #inputbar input::placeholder { color: var(--dim); }
+  #inputbar textarea#prompt::-webkit-scrollbar { display: none; }
+  #inputbar textarea#prompt:focus { border-color: #58a6ff; }
+  #inputbar textarea#prompt::placeholder { color: var(--dim); }
   #mirror {
     position: absolute;
     inset: 0;
     padding: 8px 38px 8px 12px;
     border: 1px solid transparent; /* mirror the input's border box exactly */
     color: var(--text);
-    white-space: pre;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
     overflow: hidden;
     pointer-events: none;
   }
@@ -513,6 +537,12 @@
 </head>
 <body>
   <div id="titlebar">
+    <svg class="logo" viewBox="0 0 1000 1000" fill="none" aria-hidden="true">
+      <circle cx="500" cy="500" r="500" fill="#161616"/>
+      <path d="M498.255 499.564C498.546 458.711 560.127 377.004 802.382 377.004" stroke-width="56" stroke="#6E6E6E"/>
+      <path d="M498.255 499.564C498.691 426.581 560.547 289.808 803.5 289.808" stroke-width="56" stroke="#919191"/>
+      <path d="M804.127 196C804.127 196 498.255 196 498.255 500.436C498.255 804.872 195 804 195 804" stroke-width="56" stroke="#F4F4F4"/>
+    </svg>
     <b>SKYLLA</b>
     <button id="open-folder" hidden>Open Folder</button>
     <button id="shell-btn" title="toggle the shared shell console tile">Shell</button>
@@ -525,6 +555,13 @@
       <option value="sonnet">sonnet</option>
       <option value="opus">opus</option>
       <option value="fable">fable</option>
+    </select>
+    <span class="lbl">mode</span>
+    <select id="perm-mode" title="permission mode for all sessions">
+      <option value="manual">ask all</option>
+      <option value="acceptEdits">accept edits</option>
+      <option value="auto">auto</option>
+      <option value="bypassPermissions">bypass</option>
     </select>
     <span class="cwd" id="cwd"></span>
   </div>
@@ -587,7 +624,7 @@
     <div id="inputwrap">
       <div id="suggest"></div>
       <div id="mirror"></div>
-      <input id="prompt" placeholder="message the orchestrator — prefix @w1 or @<session-id> to target a worker" autofocus>
+      <textarea id="prompt" rows="1" placeholder="message the orchestrator — prefix @w1 or @<session-id> to target a worker · Shift+Enter for a new line" autofocus></textarea>
       <button id="attach" title="upload a file (goes to @target or orchestrator)">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
@@ -852,6 +889,7 @@ function panelFor(name, container, big) {
         <button class="p-allow">Allow</button>
         <button class="p-deny">Deny</button>
       </div>
+      <div class="pin" hidden title="your latest message · click to jump to it"></div>
       <div class="body"></div>`;
     container.appendChild(el);
     el.querySelector('.p-allow').addEventListener('click', () =>
@@ -908,7 +946,9 @@ function panelFor(name, container, big) {
       });
     }
 
-    p = { el, body: el.querySelector('.body') };
+    p = { el, body: el.querySelector('.body'), pin: el.querySelector('.pin') };
+    p.body.addEventListener('scroll', () => updatePin(p));
+    p.pin.addEventListener('click', () => p.pinTarget?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
     // +/- toggle on chunky user messages
     p.body.addEventListener('click', e => {
       const b = e.target.closest('.msgtoggle');
@@ -926,7 +966,8 @@ function renderWorker(p, w) {
   const tag = el.querySelector('.tag');
   tag.textContent = w.name;
   tag.style.background = COLOR[w.color] ?? w.color;
-  el.querySelector('.meta').textContent = `${w.label} ${w.mult.toFixed(1)}x gen${w.generation}`;
+  const modeNote = w.wantMode && w.mode && w.wantMode !== w.mode ? ` · ${MODE_LABEL[w.mode] ?? w.mode} (no ${MODE_LABEL[w.wantMode] ?? w.wantMode})` : '';
+  el.querySelector('.meta').textContent = `${w.label} ${w.mult.toFixed(1)}x gen${w.generation}${modeNote}`;
   el.querySelector('.cost').textContent = `$${w.cost.toFixed(2)}`;
   el.querySelector('.ctxpct').textContent = `ctx ${w.contextPct}%`;
   el.querySelector('.burn').textContent = w.burn > 0 ? `$${w.burn.toFixed(2)}/m` : '';
@@ -966,6 +1007,23 @@ function renderWorker(p, w) {
     body.dataset.html = html;
     if (nearBottom) body.scrollTop = body.scrollHeight;
   }
+  updatePin(p);
+}
+
+// Show the latest user message pinned at the top once it has scrolled out of view.
+function updatePin(p) {
+  if (!p.pin) return;
+  const users = p.body.querySelectorAll('.line.user');
+  const last = users[users.length - 1];
+  const top = p.body.getBoundingClientRect().top;
+  const show = !!last && last.getBoundingClientRect().top < top;
+  p.pinTarget = last;
+  if (show) {
+    const text = (last.querySelector('span') ?? last).textContent;
+    if (p.pin.textContent !== text) p.pin.textContent = text;
+    p.pin.style.top = p.body.offsetTop + 'px';
+  }
+  p.pin.hidden = !show;
 }
 
 const grid = document.getElementById('grid');
@@ -1025,6 +1083,7 @@ function render(s) {
   document.getElementById('flag-budget').style.display = totalCost > s.budget * 0.8 ? '' : 'none';
   document.getElementById('flag-done').style.display = s.done ? '' : 'none';
   document.getElementById('cwd').textContent = s.cwd ?? '';
+  if (s.cwd && s.cwd !== trustCheckedCwd) { trustCheckedCwd = s.cwd; ensureTrust(s.cwd); }
   const pu = s.planUsage;
   const planWrap = document.getElementById('s-plan-wrap');
   planWrap.hidden = !pu;
@@ -1040,6 +1099,9 @@ function render(s) {
   }
   qrBtn.hidden = !s.remoteUrl;
   remoteBtn.hidden = !!s.remoteUrl;
+  const modeSel = document.getElementById('perm-mode');
+  if (document.activeElement !== modeSel && s.permMode) modeSel.value = s.permMode;
+  modeSel.classList.toggle('danger', s.permMode === 'bypassPermissions');
   const sel = document.getElementById('orch-model');
   if (document.activeElement !== sel && s.orchestrator?.label && sel.querySelector(`option[value="${s.orchestrator.label}"]`)) {
     sel.value = s.orchestrator.label;
@@ -1115,8 +1177,19 @@ function updateMirror() {
   mirror.innerHTML = esc(input.value)
     .replace(/^(@\S*)/, '<span class="at">$1</span>')
     .replace(/^((?:<span class="at">@[^<]*<\/span>\s+)?)(\/\S+)/, '$1<span class="slash">$2</span>');
-  mirror.scrollLeft = input.scrollLeft;
+  autosize();
+  mirror.scrollTop = input.scrollTop;
 }
+
+// grow with the text up to max-height (CSS), then scroll
+function autosize() {
+  input.style.height = 'auto';
+  const max = window.innerHeight * 0.4;
+  const h = input.scrollHeight + 2; // + borders
+  input.style.height = Math.min(h, max) + 'px';
+  input.style.overflowY = h > max ? 'auto' : 'hidden';
+}
+window.addEventListener('resize', autosize);
 
 function updateSuggest() {
   const tok = mentionToken();
@@ -1149,7 +1222,7 @@ function pickSuggestion(i) {
 }
 
 input.addEventListener('input', () => { sugSel = 0; updateMirror(); updateSuggest(); });
-input.addEventListener('scroll', () => { mirror.scrollLeft = input.scrollLeft; });
+input.addEventListener('scroll', () => { mirror.scrollTop = input.scrollTop; });
 input.addEventListener('blur', () => { suggest.style.display = 'none'; });
 
 input.addEventListener('keydown', e => {
@@ -1158,7 +1231,9 @@ input.addEventListener('keydown', e => {
   if (open && e.key === 'ArrowUp')   { e.preventDefault(); sugSel = (sugSel - 1 + sugItems.length) % sugItems.length; return updateSuggest(); }
   if (open && (e.key === 'Tab' || e.key === 'Enter')) { e.preventDefault(); return pickSuggestion(sugSel); }
   if (e.key === 'Escape') { suggest.style.display = 'none'; sugItems = []; return; }
-  if (e.key === 'Enter' && input.value.trim()) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault(); // Shift+Enter inserts a newline instead
+    if (!input.value.trim()) return;
     fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: input.value }) });
     input.value = '';
     updateMirror();
@@ -1172,6 +1247,35 @@ document.getElementById('orch-model').addEventListener('change', e => {
   e.target.blur();
 });
 
+const MODE_LABEL = { manual: 'ask all', acceptEdits: 'accept edits', auto: 'auto', bypassPermissions: 'bypass' };
+document.getElementById('perm-mode').addEventListener('change', e => {
+  const mode = e.target.value;
+  if (mode === 'bypassPermissions' && !confirm('Bypass mode: every session runs any tool without asking (skylla\'s git guards still apply). Continue?')) {
+    e.target.value = lastState?.permMode ?? 'acceptEdits';
+  } else {
+    fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: `/mode ${mode}` }) });
+  }
+  e.target.blur();
+});
+
+// Workspace trust: claude ignores a folder's .claude settings (permission rules)
+// until it is trusted, and headless workers never show the trust dialog.
+let trustCheckedCwd = null;
+async function ensureTrust(dir) {
+  try {
+    const { trusted } = await (await fetch(api(`/trust?dir=${encodeURIComponent(dir)}`))).json();
+    if (trusted) return true;
+    if (!confirm(`Trust this folder?
+
+${dir}
+
+Claude will apply its .claude settings (permission rules, hooks, MCP servers). Only trust code you know.`)) return false;
+    const r = await (await fetch(api('/trust'), { method: 'POST', body: JSON.stringify({ dir }) })).json();
+    if (!r.trusted) alert('Could not record trust in ~/.claude.json.');
+    return r.trusted;
+  } catch { return false; }
+}
+
 // Open Folder: Electron-only (needs the native directory picker).
 // Picker -> modal: choose model + new window or reuse this one.
 const openBtn = document.getElementById('open-folder');
@@ -1182,6 +1286,7 @@ if (window.skylla) {
   openBtn.addEventListener('click', async () => {
     const dir = await window.skylla.pickFolder();
     if (!dir) return;
+    await ensureTrust(dir);
     modalDir = dir;
     document.getElementById('modal-dir').textContent = dir;
     // default to whatever this window's orchestrator is currently running

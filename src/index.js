@@ -8,10 +8,11 @@ import { Worker, COLORS } from './worker.js';
 import { App } from './ui.js';
 import { ORCHESTRATOR_PROMPT, WORKER_PROMPT, MODEL_ALIASES, parseDirectives } from './orchestrator.js';
 import { fetchPlanUsage } from './usage.js';
+import { normDir, isTrusted, trustDir } from './trust.js';
 
 // --- args ---
 const argv = process.argv.slice(2);
-let cwd = process.cwd();
+let cwd = normDir(process.cwd());
 let task = null;
 let budget = 10.0;
 let orchModel = 'auto';   // auto = escalation ladder; or pin with --orch-model
@@ -24,8 +25,12 @@ let useTui = false;
 let host = '127.0.0.1'; // --host 0.0.0.0 (or a LAN/tailscale IP) enables remote + token auth
 let autoApprove = false; // --auto-approve skips the spend gate
 let remote = false; // --remote: internet via cloudflared tunnel if installed, else LAN IP
+// permission mode for every session: ask (edits auto, shell asks) | auto | bypass | manual
+const PERM_MODES = { ask: 'acceptEdits', acceptedits: 'acceptEdits', auto: 'auto', bypass: 'bypassPermissions', bypasspermissions: 'bypassPermissions', yolo: 'bypassPermissions', manual: 'manual', default: 'manual' };
+let permMode = 'acceptEdits';
+let permModeFromArgs = false;
 for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === '-C') cwd = resolve(argv[++i]);
+  if (argv[i] === '-C') cwd = normDir(argv[++i]);
   else if (argv[i] === '--budget') budget = parseFloat(argv[++i]);
   else if (argv[i] === '--orch-model') orchModel = argv[++i];
   else if (argv[i] === '--recycle-at') recycleAt = parseInt(argv[++i], 10);
@@ -33,6 +38,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (argv[i] === '--host') host = argv[++i];
   else if (argv[i] === '--remote') remote = true;
   else if (argv[i] === '--auto-approve') autoApprove = true;
+  else if (argv[i] === '--mode') { permMode = PERM_MODES[String(argv[++i]).toLowerCase()] ?? permMode; permModeFromArgs = true; }
   else if (argv[i] === 'resume' && !resumeMode && !task) resumeMode = true;
   else if (resumeMode && !resumeRunId) resumeRunId = argv[i];
   else if (!task) task = argv[i];
@@ -95,6 +101,7 @@ writeGuards();
 
 const state = {
   cwd, runDir,
+  permMode,
   orchestrator: null,
   workers: [],
   retired: [],   // killed workers: panel removed, cost + manifest record kept
@@ -138,7 +145,7 @@ const totalCost = () =>
 function saveManifest() {
   bumpWeekly(totalCost());
   writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
-    runId, cwd, budget: state.budget, totalCost: totalCost(),
+    runId, cwd, budget: state.budget, permMode, totalCost: totalCost(),
     orchestrator: state.orchestrator && {
       sessions: state.orchestrator.sessionIds, model: state.orchestrator.model, cost: state.orchestrator.cost,
     },
@@ -187,15 +194,17 @@ if (useTui) {
       if (mode === 'current') return openHere(dir, model);
       if (mode === 'resume' && existsSync(join(resolve(dir), '.skylla', 'runs'))) {
         // resume a run (specific or latest) in a new window via the CLI resume path
-        const args = [fileURLToPath(import.meta.url), '-C', dir, 'resume'];
+        const args = [fileURLToPath(import.meta.url), '-C', dir, '--mode', permMode, 'resume'];
         if (runId) args.push(runId);
         spawn(process.execPath, args, { detached: true, stdio: 'ignore' }).unref();
         return;
       }
-      spawn(process.execPath, [fileURLToPath(import.meta.url), '-C', dir, '--orch-model', model ?? orchModel],
+      spawn(process.execPath, [fileURLToPath(import.meta.url), '-C', dir, '--mode', permMode, '--orch-model', model ?? orchModel],
         { detached: true, stdio: 'ignore' }).unref();
     },
     onRemote: () => startTunnel(),
+    onTrust: dir => ({ trusted: trustDir(dir || cwd) }),
+    isTrusted: dir => isTrusted(dir || cwd),
     onListRuns: dir => {
       const runsDir = join(resolve(dir || cwd), '.skylla', 'runs');
       if (!existsSync(runsDir)) return [];
@@ -312,6 +321,14 @@ setInterval(refreshPlanUsage, 120_000).unref();
 
 const git = args => execFileSync('git', args, { cwd, stdio: 'pipe', maxBuffer: 16 * 1024 * 1024 }).toString();
 
+// One mode for the whole run: live sessions switch now, later launches inherit it.
+function setPermMode(mode) {
+  permMode = state.permMode = mode;
+  for (const w of [state.orchestrator, ...state.workers]) w?.setPermissionMode(mode);
+  state.orchestrator?.pushLine(`[skylla] permission mode: ${mode}`);
+  saveManifest();
+}
+
 function sysToOrch(text) {
   // feed enforcement feedback back to the orchestrator
   state.orchestrator?.send(`[system] ${text}`);
@@ -362,12 +379,23 @@ function handleUserInput(text) {
     else target.respondPermission(perm[1] === 'allow');
     return rerender();
   }
+  const pm = text.match(/^\/mode(?:\s+(\S+))?\s*$/);
+  if (pm) {
+    const mode = pm[1] && PERM_MODES[pm[1].toLowerCase()];
+    if (!mode) state.orchestrator?.pushLine(`[skylla] mode is ${permMode}. Use /mode ask | auto | bypass | manual`);
+    else setPermMode(mode);
+    return rerender();
+  }
   if (/^\/remote\s*$/.test(text)) {
     const r = requestRemote();
     state.orchestrator?.pushLine(`[skylla] ${r.text}`);
     return rerender();
   }
-  if (/^\/(stop|esc)\s*$/.test(text)) { target?.interrupt(); return; }
+  if (/^\/(stop|esc)\s*$/.test(text)) {
+    target?.interrupt();
+    if (target?.escalating || target?.handoffFile) cancelHandoff(target, 'interrupted by the user');
+    return;
+  }
   if (/^\/status\s*$/.test(text)) {
     target.pushLine(`[skylla] ${target.name}: ${target.model} · gen ${target.generation} · ctx ${target.contextPct}% · $${target.cost.toFixed(2)} · ${target.status} · session ${target.sessionIds.at(-1)?.slice(0, 8) ?? '-'}`);
     return rerender();
@@ -402,7 +430,26 @@ function handleUserInput(text) {
     else retireWorker(target);
     return;
   }
+  // Plain-language handoff ("hand off to a fresh agent", "replace yourself"):
+  // do it in code. Models (haiku especially) otherwise reach for their built-in
+  // subagent, which stays inside the same session and never shows on the dashboard.
+  if (target?.proc && looksLikeHandoff(text)) {
+    target.pushLine(`> ${text}`);
+    target.pushLine('[skylla] handoff request detected - fresh session will take over this panel');
+    const named = text.toLowerCase().match(/\b(haiku|sonnet|opus|fable)\b/)?.[1];
+    if (target === state.orchestrator) escalateOrch(`user asked for a handoff: "${text.slice(0, 300)}"`, named ?? currentOrchModel());
+    else { if (named) target.swapTo = named; requestHandoff(target, text); }
+    return rerender();
+  }
   target?.send(text);
+}
+
+function looksLikeHandoff(text) {
+  const t = text.toLowerCase();
+  if (/\breplace (you|yourself)\b/.test(t)) return true;
+  if (/\b(fresh|new) (agent|session|context)\b/.test(t) && /\b(take over|takes over|replace|replaces|continue|hand)/.test(t)) return true;
+  return /\bhand ?(off|over)\b/.test(t) && /\b(you|yourself|fresh|new|another|next|agent|session)\b/.test(t)
+    && !/\bhand ?off (file|doc|note)s?\b/.test(t);
 }
 
 function swapModel(target, alias) {
@@ -527,6 +574,7 @@ function spawnWorker({ name, model, prompt, worktree }) {
     color: COLORS[state.workers.length % COLORS.length],
     systemPrompt: WORKER_PROMPT,
     settingsFile: guardsFile,
+    permissionMode: permMode,
   });
   wireWorker(w);
   state.workers.push(w);
@@ -550,6 +598,10 @@ function wireWorker(w) {
   recordShell(w);
   w.on('text', text => {
     if (text.includes('===HANDOFF_DONE===')) return recycleNow(w);
+    if (text.includes('===HANDOFF_REQUEST===') && !w.handoffFile) {
+      w.pushLine('[skylla] handoff requested by the session');
+      return requestHandoff(w);
+    }
     if (text.includes('===TASK_DONE===')) {
       if (w.recyclePending) return requestHandoff(w);
       w.lastReport = text.replace('===TASK_DONE===', '').trim().slice(-1500);
@@ -573,16 +625,18 @@ function wireWorker(w) {
   w.on('exit', () => { rerender(); saveManifest(); });
 }
 
-function requestHandoff(w) {
+function requestHandoff(w, userNote) {
   const file = join(runDir, 'handoffs', `${w.name}-gen${w.generation}.md`);
   w.handoffFile = file;
-  w.send(`Before your context is recycled, write a handoff file to "${file}" containing: the goal, decisions made so far, current state, and concrete next steps. Then reply with exactly ===HANDOFF_DONE===`);
+  const note = userNote ? `The user asked for this handoff: "${userNote.slice(0, 500)}". Include anything in that request the next session must act on. ` : '';
+  w.send(`${note}Before your context is recycled, write a handoff file to "${file}" containing: the goal, decisions made so far, current state, and concrete next steps. Then reply with exactly ===HANDOFF_DONE===`);
 }
 
 function recycleNow(w) {
   w.pushLine(`[skylla] recycling (gen ${w.generation} -> ${w.generation + 1})`);
   w.recyclePending = false;
   const handoff = w.handoffFile;
+  w.handoffFile = null;
   w.kill();
   w.once('exit', () => {
     w.contextTokens = 0;
@@ -595,9 +649,13 @@ function recycleNow(w) {
 const currentOrchModel = () => orchModel === 'auto' ? ORCH_LADDER[orchRung] : orchModel;
 
 // targetAlias: explicit model to swap to (user request); otherwise climb the auto ladder.
-function escalateOrch(reason, targetAlias) {
+function escalateOrch(reason, targetAlias, { assess = false } = {}) {
   const o = state.orchestrator;
-  if (!o || o.escalating) return;
+  if (!o) return;
+  if (o.escalating) { // already pending (e.g. an earlier one was interrupted): re-issue with the new target
+    o.escalating = false;
+    o.pushLine('[skylla] re-issuing pending handoff');
+  }
   let next = null;
   if (targetAlias) {
     next = targetAlias;
@@ -614,10 +672,35 @@ function escalateOrch(reason, targetAlias) {
   }
   o.escalating = true;
   o.pendingModel = next;
+  o.assessModel = assess;
   const file = join(runDir, 'handoffs', `orch-gen${o.generation}.md`);
   o.handoffFile = file;
-  o.pushLine(`[skylla] ${next ? `switching to ${next}` : 'recycling'}: ${reason}`);
-  o.send(`[system] You are being ${next ? `replaced by another model (${next})` : 'recycled with fresh context'}: ${reason}. Write a complete orchestrator handoff to "${file}": the user's task, overall plan and progress, every worker (name, model, assignment, status), budget spent, and concrete next steps. Then reply with exactly ===HANDOFF_DONE===`);
+  const sameModel = next && next === currentModelAlias(o);
+  o.pushLine(`[skylla] ${sameModel ? `handing off to a fresh ${next} session` : next ? `switching to ${next}` : 'recycling'}: ${reason}`);
+  const who = sameModel ? `a fresh ${next} session (same model, clean context)` : next ? `another model (${next})` : 'a fresh session';
+  const assessNote = assess
+    ? ` Also assess the remaining work: only if it genuinely needs a stronger model than ${next}, add a line "NEXT_MODEL: opus" or "NEXT_MODEL: fable" before the marker; otherwise the same model continues.`
+    : '';
+  o.send(`[system] Skylla is replacing you with ${who}: ${reason}. This is a real handoff: a new session takes over this dashboard panel and reads your file. Write a complete orchestrator handoff to "${file}": the user's task, overall plan and progress, every worker (name, model, assignment, status), budget spent, and concrete next steps.${assessNote} Then reply with exactly ===HANDOFF_DONE===`);
+}
+
+// alias of the model a session is running, e.g. 'claude-opus-4-6' -> 'opus'
+function currentModelAlias(w) {
+  return Object.entries(MODEL_ALIASES).find(([, id]) => String(w.model ?? '').startsWith(id))?.[0] ?? null;
+}
+
+// User stopped a session mid-handoff: drop the pending handoff instead of leaving it stuck.
+function cancelHandoff(w, why) {
+  if (w === state.orchestrator) {
+    w.escalating = false;
+    w.pendingModel = null;
+    w.assessModel = false;
+    w.snoozeUntilPct = w.contextPct + 10; // don't re-trigger on the very next turn
+  }
+  w.handoffFile = null;
+  w.swapTo = null;
+  w.recyclePending = false;
+  w.pushLine(`[skylla] handoff cancelled (${why}). Ask again or use /handoff when ready.`);
 }
 
 const orchSysPrompt = model => ORCHESTRATOR_PROMPT
@@ -631,6 +714,7 @@ function buildOrchestrator(model) {
     cwd,
     color: 'white',
     systemPrompt: orchSysPrompt(model),
+    permissionMode: permMode,
   });
   o.on('update', rerender);
   recordShell(o);
@@ -642,8 +726,16 @@ function buildOrchestrator(model) {
       o.once('exit', () => {
         o.escalating = false;
         o.contextTokens = 0;
-        const target = o.pendingModel ?? currentOrchModel();
+        let target = o.pendingModel ?? currentOrchModel();
+        const rec = o.assessModel && text.match(/NEXT_MODEL:\s*(haiku|sonnet|opus|fable)\b/i)?.[1]?.toLowerCase();
+        if (rec && rec !== target) {
+          target = rec;
+          if (orchModel === 'auto') { const r = ORCH_LADDER.indexOf(rec); if (r >= 0) orchRung = r; } else orchModel = rec;
+          o.pushLine(`[skylla] handoff assessment: continuing on ${rec}`);
+        }
         o.pendingModel = null;
+        o.assessModel = false;
+        o.snoozeUntilPct = 0;
         o.model = MODEL_ALIASES[target] ?? target;
         o.systemPrompt = orchSysPrompt(o.model); // keep the "running as" line truthful
         o.start(`You are taking over as SKYLLA orchestrator mid-run. Read your predecessor's handoff at "${handoff}" and continue managing the run from there.`);
@@ -676,6 +768,9 @@ function buildOrchestrator(model) {
         state.done = true;
         writeReport(d.summary);
         saveManifest();
+      } else if (d.kind === 'HANDOFF') {
+        const model = d.model && MODEL_ALIASES[String(d.model).toLowerCase()] ? String(d.model).toLowerCase() : currentOrchModel();
+        escalateOrch(`handoff: ${d.reason ?? 'requested'}`, model);
       } else if (d.kind === 'ESCALATE') {
         escalateOrch(`self-reported: ${d.reason ?? 'unspecified'}`);
       } else {
@@ -686,7 +781,8 @@ function buildOrchestrator(model) {
   o.on('result', () => {
     saveManifest();
     // code-side escalation trigger: context pressure the model can't be trusted to notice
-    if (o.contextPct >= state.recycleAtPct && !o.escalating) escalateOrch(`context at ${o.contextPct}%`);
+    if (o.contextPct >= Math.max(state.recycleAtPct, o.snoozeUntilPct ?? 0) && !o.escalating)
+      escalateOrch(`context at ${o.contextPct}%`, currentModelAlias(o) ?? currentOrchModel(), { assess: true });
   });
   state.orchestrator = o;
   return o;
@@ -699,7 +795,7 @@ function openHere(dir, model) {
   state.retired = [];
   state.orchestrator = null;
   state.done = false;
-  cwd = resolve(dir);
+  cwd = normDir(dir);
   state.cwd = cwd;
   state.layout = null;
   try { state.layout = JSON.parse(readFileSync(layoutFile(), 'utf8')); } catch { /* none yet */ }
@@ -720,6 +816,7 @@ function startOrchestrator() {
 }
 
 function resumeRun(m) {
+  if (!permModeFromArgs && m.permMode) permMode = state.permMode = m.permMode;
   // restore the auto-ladder rung from the model the orchestrator had reached
   if (orchModel === 'auto' && m.orchestrator?.model) {
     const alias = Object.entries(MODEL_ALIASES).find(([, id]) => m.orchestrator.model.startsWith(id))?.[0];
@@ -730,7 +827,7 @@ function resumeRun(m) {
   // orchestrator decides who actually continues (no uncontrolled restart burst)
   for (const mw of m.workers ?? []) {
     if (mw.retired) { state.retired.push(mw); continue; } // keep cost, no panel
-    const w = new Worker({ name: mw.name, model: mw.model, cwd: mw.cwd ?? cwd, color: mw.color, systemPrompt: WORKER_PROMPT, settingsFile: guardsFile });
+    const w = new Worker({ name: mw.name, model: mw.model, cwd: mw.cwd ?? cwd, color: mw.color, systemPrompt: WORKER_PROMPT, settingsFile: guardsFile, permissionMode: permMode });
     w.cost = mw.cost ?? 0;
     w.generation = mw.generation ?? 1;
     w.sessionIds = mw.sessions ?? [];

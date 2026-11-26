@@ -34,6 +34,7 @@ Run from your project directory — sessions, runs, and layout are per-project.
 | `--auto-approve` | off | skip the spend gate (plans auto-approved) |
 | `--tui` | off | terminal UI (Ink) instead of Electron |
 | `-C <dir>` | cwd | run in another directory |
+| `--mode <m>` | ask | permission mode for all sessions: `ask` (edits auto, shell asks), `auto`, `bypass`, `manual`; switch live with the titlebar dropdown or `/mode <m>` |
 
 ## The input box
 

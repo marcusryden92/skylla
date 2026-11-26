@@ -14,7 +14,8 @@ let nextWorkerNum = 1;
 export class Worker extends EventEmitter {
   constructor({ name, model, cwd, color, systemPrompt, permissionMode, settingsFile }) {
     super();
-    this.permissionMode = permissionMode;
+    this.permissionMode = permissionMode ?? 'acceptEdits'; // requested mode
+    this.effectiveMode = null;  // what the CLI actually runs (auto can be refused per model)
     this.settingsFile = settingsFile;
     this.name = name ?? `w${nextWorkerNum++}`;
     this.model = model;
@@ -79,7 +80,10 @@ export class Worker extends EventEmitter {
       '--output-format', 'stream-json',
       '--verbose',
       ...sessionArgs,
-      '--permission-mode', this.permissionMode ?? 'acceptEdits',
+      // always launch in acceptEdits, then switch: a mode the model can't run
+      // (auto on haiku) is refused with an error instead of failing the launch
+      '--permission-mode', 'acceptEdits',
+      '--allow-dangerously-skip-permissions', // makes bypass switchable mid-session; doesn't enable it
       '--permission-prompt-tool', 'stdio', // tools outside the mode prompt via control_request instead of auto-deny
     ];
     if (this.model) args.push('--model', this.model);
@@ -93,6 +97,8 @@ export class Worker extends EventEmitter {
       : spawn('claude', args.map(a => `"${a}"`), { cwd: this.cwd, shell: true, windowsHide: true, env });
     this.proc.stdout.on('data', d => this.onData(d));
     this.proc.stderr.on('data', d => this.pushLine(String(d).trim()));
+    this.effectiveMode = 'acceptEdits';
+    if (this.permissionMode !== 'acceptEdits') this.setPermissionMode(this.permissionMode);
     this.proc.on('close', code => {
       this.proc = null;
       if (this.status === 'running') this.status = code === 0 ? 'done' : 'error';
@@ -167,6 +173,15 @@ export class Worker extends EventEmitter {
         if (out) this.pushLine(`⇠ ${out.split('\n').slice(0, 2).join(' · ').slice(0, 160)}`);
         this.emit('shell', { cmd: meta.cmd ?? '', out });
       }
+    } else if (ev.type === 'control_response' && this.modeRequests?.has(ev.response?.request_id)) {
+      const mode = this.modeRequests.get(ev.response.request_id);
+      this.modeRequests.delete(ev.response.request_id);
+      if (ev.response.subtype === 'success') {
+        this.effectiveMode = mode;
+        if (mode === 'bypassPermissions') while (this.permRequests?.length) this.respondPermission(true);
+      } else {
+        this.pushLine(`[skylla] mode ${mode} refused: ${ev.response.error ?? 'unknown error'} (staying in ${this.effectiveMode})`);
+      }
     } else if (ev.type === 'control_request' && ev.request?.subtype === 'can_use_tool') {
       const req = { id: ev.request_id, tool: ev.request.tool_name, input: ev.request.input ?? {} };
       (this.permRequests ??= []).push(req);
@@ -203,6 +218,17 @@ export class Worker extends EventEmitter {
     }) + '\n');
     this.pushLine(`[skylla] ${allow ? 'allowed' : 'denied'}: [${req.tool}]`);
     this.emit('update');
+  }
+
+  // Switch permission mode on the live session; also used for the next launch.
+  setPermissionMode(mode) {
+    this.permissionMode = mode;
+    if (!this.proc) return;
+    const id = `mode-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    (this.modeRequests ??= new Map()).set(id, mode);
+    this.proc.stdin.write(JSON.stringify({
+      type: 'control_request', request_id: id, request: { subtype: 'set_permission_mode', mode },
+    }) + '\n');
   }
 
   // Esc-equivalent: stop the current turn, session stays alive for the next prompt.
