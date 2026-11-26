@@ -45,6 +45,7 @@ function snapshot(state) {
     cwd: state.cwd,
     permMode: state.permMode ?? 'acceptEdits',
     launcher: !!state.launcher,
+    budgetFromArgs: !!state.budgetFromArgs,
     layout: state.layout ?? null,
     planUsage: state.planUsage ?? null,
     pendingPlan: state.pendingPlan ?? null,
@@ -134,7 +135,7 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
       req.on('end', () => {
         let out = { ok: false, text: 'bad request' };
         try {
-          const { dir, model, action, runId, task, effort } = JSON.parse(body);
+          const { dir, model, action, runId, task, effort, budget } = JSON.parse(body);
           out = onStart?.({
             dir: dir ? String(dir) : null,
             model: ['haiku', 'sonnet', 'opus', 'fable', 'auto'].includes(model) ? model : null,
@@ -142,6 +143,7 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
             runId: runId ? String(runId) : null,
             task: task ? String(task) : null,
             effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : null,
+            budget: Number.isFinite(+budget) && +budget >= 0 && budget !== null && budget !== '' ? +budget : null,
           }) ?? { ok: false, text: 'unavailable' };
         } catch (e) { out = { ok: false, text: String(e.message ?? e) }; }
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));

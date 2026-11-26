@@ -229,9 +229,6 @@
     cursor: pointer; white-space: nowrap;
   }
   .run-row:hover { border-color: #58a6ff; background: #21262d; }
-  .run-row .rid { color: var(--accent); font-weight: 600; }
-  .run-row .dim { flex: none; }
-  .run-row .latest { color: #4ade80; font-size: 11px; margin-left: auto; }
   #runs-cancel {
     align-self: flex-end;
     background: #21262d; border: 1px solid var(--border); border-radius: 6px;
@@ -451,10 +448,20 @@
   .lmodels .lbtn.sel { border-color: #58a6ff; background: #1f2d3d; color: #58a6ff; font-weight: 700; }
   .lmodels .spacer { flex: 1; }
   .lhint { color: var(--dim); font-size: 12px; }
+  .lbudget { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 13px; }
+  .lbudget input {
+    width: 80px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font: inherit; font-size: 13px; padding: 5px 8px;
+  }
+  .lbudget input:focus { outline: none; border-color: #58a6ff; }
   .lruns { display: flex; flex-direction: column; gap: 4px; max-height: 40vh; overflow-y: auto; }
-  .lrun { display: grid; grid-template-columns: 1fr auto auto auto; gap: 14px; align-items: center; padding: 7px 10px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
+  .lrun { display: flex; flex-direction: column; gap: 2px; padding: 7px 10px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; min-width: 0; }
+  .runtitle { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .runtitle.fallback { color: var(--dim); font-style: italic; }
+  .runlast { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .runmeta { color: var(--dim); font-size: 12px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
   .lrun:hover { border-color: #58a6ff; background: #1c2128; }
-  .lrun .latest { color: #4ade80; font-size: 11px; margin-left: 8px; }
+  .latest { color: #4ade80; font-size: 11px; }
 
   /* --- status bar + input --- */
   #statusbar {
@@ -636,7 +643,12 @@
           <span class="spacer"></span>
           <button class="lbtn primary" id="l-start">Start</button>
         </div>
-        <div class="lhint">Or type your first task below and press Enter.</div>
+        <div class="lbudget">
+          <label for="l-budget">budget</label>
+          <input id="l-budget" type="number" min="0" step="5">
+          <span>eq · per worker <span id="l-budget-pw"></span>eq</span>
+        </div>
+        <div class="lhint">Or type your first task below and press Enter. The budget also applies when resuming, if you change it.</div>
       </div>
       <div class="lbox">
         <div class="lsec">Resume a previous run in this folder</div>
@@ -1361,6 +1373,15 @@ input.addEventListener('keydown', e => {
       }
       return;
     }
+    // "/resume" or "--resume" typed in the box: open the resume list instead of
+    // sending it as a message (which would start a brand-new conversation)
+    if (/^\s*(\/|--)resume\s*$/i.test(input.value)) {
+      input.value = '';
+      updateMirror();
+      if (lastState?.launcher) document.getElementById('l-runs')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      else if (lastState?.cwd) openRunsBrowser(lastState.cwd);
+      return;
+    }
     if (lastState?.launcher) launch({ action: 'new', task: input.value });
     else fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: input.value }) });
     input.value = '';
@@ -1427,6 +1448,23 @@ function runWhen(id) {
   return d.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+// one run in a resume list: what it was about, then when/what/how much
+function runRowHtml(r, i, cls) {
+  const model = esc(String(r.orch).replace('claude-', '').replace(/-[0-9].*$/, ''));
+  return '<div class="' + cls + '" data-id="' + esc(r.id) + '" title="resume this run (' + esc(r.id) + ')">'
+    + '<span class="runtitle' + (r.titleFromTask ? '' : ' fallback') + '">' + esc(r.title ?? r.id) + '</span>'
+    + (r.last ? '<span class="runlast">↳ ' + esc(r.last) + '</span>' : '')
+    + '<span class="runmeta">'
+    + (i === 0 ? '<span class="latest">most recent</span>' : '')
+    + '<span>active ' + esc(r.lastActive ? ago(r.lastActive) : runWhen(r.id)) + '</span>'
+    + '<span>started ' + esc(runWhen(r.id)) + '</span>'
+    + '<span>' + model + '</span>'
+    + '<span>' + (r.replies ?? 0) + ' repl' + (r.replies === 1 ? 'y' : 'ies') + '</span>'
+    + (r.workers ? '<span>' + r.workers + ' worker' + (r.workers === 1 ? '' : 's') + '</span>' : '')
+    + '<span>' + (r.cost ?? 0).toFixed(2) + 'eq</span>'
+    + '</span></div>';
+}
+
 async function loadLauncherRuns() {
   const list = document.getElementById('l-runs');
   document.getElementById('l-dir').textContent = launcherDir;
@@ -1434,19 +1472,17 @@ async function loadLauncherRuns() {
   let runs = [];
   try { runs = await (await fetch(api('/runs?dir=' + encodeURIComponent(launcherDir)))).json(); } catch { /* offline */ }
   if (!runs.length) { list.innerHTML = '<div class="lhint">No previous runs in this folder.</div>'; return; }
-  list.innerHTML = runs.map((r, i) =>
-    '<div class="lrun" data-id="' + esc(r.id) + '" title="resume this run">'
-    + '<span>' + esc(runWhen(r.id)) + (i === 0 ? '<span class="latest">latest</span>' : '') + '</span>'
-    + '<span class="dim">' + esc(String(r.orch).replace('claude-', '').replace(/-[0-9].*$/, '')) + '</span>'
-    + '<span class="dim">' + r.workers + ' worker' + (r.workers === 1 ? '' : 's') + '</span>'
-    + '<span class="dim">' + (r.cost ?? 0).toFixed(2) + 'eq</span>'
-    + '</div>').join('');
+  list.innerHTML = runs.map((r, i) => runRowHtml(r, i, 'lrun')).join('');
   for (const row of list.querySelectorAll('.lrun')) row.addEventListener('click', () => launch({ action: 'resume', runId: row.dataset.id }));
 }
 
 async function launch(opts) {
   try {
-    const r = await (await fetch(api('/start'), { method: 'POST', body: JSON.stringify({ dir: launcherDir, model: launcherModel, effort: launcherEffort, ...opts }) })).json();
+    const b = launcherBudget();
+    if (b === undefined) return alert('Budget must be a number of 0 or more.');
+    // new run: always send the cap; resume: only when the user changed it (else the run keeps its own)
+    const budget = opts.action === 'resume' && !budgetTouched ? null : b;
+    const r = await (await fetch(api('/start'), { method: 'POST', body: JSON.stringify({ dir: launcherDir, model: launcherModel, effort: launcherEffort, budget, ...opts }) })).json();
     if (!r.ok) alert(r.text ?? 'could not start');
   } catch { alert('could not reach skylla'); }
 }
@@ -1463,6 +1499,25 @@ if (window.skylla) {
   });
 }
 
+// budget field: remembered across launches; prefilled from --budget / default otherwise
+const budgetInput = document.getElementById('l-budget');
+let budgetTouched = false;
+function launcherBudget() {
+  const v = budgetInput.value.trim();
+  if (v === '') return null;
+  const n = parseFloat(v);
+  return n >= 0 ? n : undefined;
+}
+function updateBudgetHint() {
+  const n = launcherBudget();
+  document.getElementById('l-budget-pw').textContent = n == null || n === undefined ? '?' : String(Math.round(n / 2 * 100) / 100);
+}
+budgetInput.addEventListener('input', () => {
+  budgetTouched = true;
+  try { localStorage.setItem('skylla.launcherBudget', budgetInput.value); } catch { /* no storage */ }
+  updateBudgetHint();
+});
+
 let launcherShown = false;
 function renderLauncher(s) {
   launcherEl.hidden = !s.launcher;
@@ -1471,6 +1526,11 @@ function renderLauncher(s) {
   document.querySelector('#titlebar .lbl').style.display = s.launcher ? 'none' : '';
   if (s.launcher && !launcherShown) {
     launcherDir = launcherDir ?? s.cwd;
+    let saved = null;
+    try { saved = localStorage.getItem('skylla.launcherBudget'); } catch { /* no storage */ }
+    budgetInput.value = s.budgetFromArgs ? String(s.budget) : (saved || String(s.budget ?? 10));
+    budgetTouched = false;
+    updateBudgetHint();
     setLauncherModel(launcherModel);
     loadLauncherRuns();
   }
@@ -1547,14 +1607,7 @@ async function openRunsBrowser(dir) {
   runsModal.hidden = false;
   const runs = await (await fetch(api(`/runs?dir=${encodeURIComponent(dir)}`))).json();
   if (!runs.length) { list.innerHTML = '<div class="dim">no runs in this folder yet</div>'; return; }
-  list.innerHTML = runs.map((r, i) => `
-    <div class="run-row" data-id="${esc(r.id)}">
-      <span class="rid">${esc(r.id)}</span>
-      <span class="dim">${(r.cost ?? 0).toFixed(2)}eq</span>
-      <span class="dim">${esc(String(r.orch).replace('claude-', '').replace(/-[0-9].*$/, ''))}</span>
-      <span class="dim">${r.workers} worker${r.workers === 1 ? '' : 's'}</span>
-      ${i === 0 ? '<span class="latest">latest</span>' : ''}
-    </div>`).join('');
+  list.innerHTML = runs.map((r, i) => runRowHtml(r, i, 'run-row lrun')).join('');
   for (const row of list.querySelectorAll('.run-row')) {
     row.addEventListener('click', () => {
       fetch(api('/open'), { method: 'POST', body: JSON.stringify({ dir, mode: 'resume', runId: row.dataset.id }) });

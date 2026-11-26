@@ -9,6 +9,7 @@ import { App } from './ui.js';
 import { ORCHESTRATOR_PROMPT, WORKER_PROMPT, MODEL_ALIASES, parseDirectives } from './orchestrator.js';
 import { fetchPlanUsage } from './usage.js';
 import { normDir, isTrusted, trustDir } from './trust.js';
+import { listRuns } from './runs.js';
 
 // --- args ---
 const argv = process.argv.slice(2);
@@ -48,19 +49,12 @@ for (let i = 0; i < argv.length; i++) {
 // --- run dir + manifest ---
 // `skylla runs`: list resumable runs (one line per run; workers are restored implicitly)
 if (task === 'runs') {
-  const runsDir = join(cwd, '.skylla', 'runs');
-  const list = existsSync(runsDir)
-    ? readdirSync(runsDir).filter(d => existsSync(join(runsDir, d, 'manifest.json'))).sort()
-    : [];
-  if (!list.length) { console.log(`no runs in ${runsDir}`); process.exit(0); }
-  for (const id of list) {
-    try {
-      const m = JSON.parse(readFileSync(join(runsDir, id, 'manifest.json'), 'utf8'));
-      const live = (m.workers ?? []).filter(w => !w.retired).length;
-      const orchModelShort = (m.orchestrator?.model ?? '?').replace('claude-', '').replace(/-[0-9].*$/, '');
-      console.log(`${id}  ${(m.totalCost ?? 0).toFixed(2)}eq  orch:${orchModelShort}  workers:${live}${id === list.at(-1) ? '  <- latest (default for resume)' : ''}`);
-    } catch { console.log(`${id}  (unreadable manifest)`); }
-  }
+  const list = listRuns(join(cwd, '.skylla', 'runs'));
+  if (!list.length) { console.log(`no runs in ${join(cwd, '.skylla', 'runs')}`); process.exit(0); }
+  list.forEach((r, i) => {
+    const model = String(r.orch).replace('claude-', '').replace(/-[0-9].*$/, '');
+    console.log(`${r.id}  ${r.cost.toFixed(2)}eq  orch:${model}  replies:${r.replies}  ${r.title.slice(0, 70)}${i === 0 ? '  <- most recent (default for resume)' : ''}`);
+  });
   process.exit(0);
 }
 
@@ -70,10 +64,7 @@ let runId, runDir, loadedManifest = null;
 const startIdle = !resumeMode && !task && !useTui;
 if (resumeMode) {
   const runsDir = join(cwd, '.skylla', 'runs');
-  const runs = existsSync(runsDir)
-    ? readdirSync(runsDir).filter(d => existsSync(join(runsDir, d, 'manifest.json'))).sort()
-    : [];
-  runId = resumeRunId ?? runs.at(-1);
+  runId = resumeRunId ?? listRuns(runsDir)[0]?.id; // most recently active, not newest
   if (!runId || !existsSync(join(runsDir, runId, 'manifest.json'))) {
     console.error(resumeRunId ? `skylla: run "${resumeRunId}" not found in ${runsDir}` : `skylla: no runs to resume in ${runsDir}`);
     process.exit(1);
@@ -107,6 +98,7 @@ const state = {
   cwd, runDir,
   permMode,
   launcher: startIdle, // true = start screen shown, no sessions running
+  budgetFromArgs,      // --budget given: the start screen prefills it over the remembered value
   orchestrator: null,
   workers: [],
   retired: [],   // killed workers: panel removed, cost + manifest record kept
@@ -151,7 +143,7 @@ function saveManifest() {
   if (state.launcher) return; // nothing started yet: don't create an empty "run"
   bumpWeekly(totalCost());
   writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
-    runId, cwd, budget: state.budget, permMode, totalCost: totalCost(),
+    runId, cwd, title: state.title ?? null, budget: state.budget, permMode, totalCost: totalCost(),
     orchestrator: state.orchestrator && {
       sessions: state.orchestrator.sessionIds, model: state.orchestrator.model, cost: state.orchestrator.cost, effort: state.orchestrator.effort,
     },
@@ -213,16 +205,7 @@ if (useTui) {
     onTrust: dir => ({ trusted: trustDir(dir || cwd) }),
     isTrusted: dir => isTrusted(dir || cwd),
     onListRuns: dir => {
-      const runsDir = join(resolve(dir || cwd), '.skylla', 'runs');
-      if (!existsSync(runsDir)) return [];
-      return readdirSync(runsDir)
-        .filter(x => existsSync(join(runsDir, x, 'manifest.json'))).sort().reverse()
-        .map(id => {
-          try {
-            const m = JSON.parse(readFileSync(join(runsDir, id, 'manifest.json'), 'utf8'));
-            return { id, cost: m.totalCost ?? 0, orch: m.orchestrator?.model ?? '?', workers: (m.workers ?? []).filter(w => !w.retired).length };
-          } catch { return { id, cost: 0, orch: '?', workers: 0 }; }
-        });
+      return listRuns(join(resolve(dir || cwd), '.skylla', 'runs'));
     },
     // --- diff review: worktree workers only ---
     onDiff: name => {
@@ -528,6 +511,7 @@ function handleUserInput(text) {
     else { if (named) target.swapTo = named; requestHandoff(target, text); }
     return rerender();
   }
+  if (target === state.orchestrator && !state.title) state.title = text.split('\n')[0].slice(0, 140);
   target?.send(text);
 }
 
@@ -896,13 +880,14 @@ function buildOrchestrator(model) {
 // either start a new run (model of choice) or resume one, in any folder.
 //   action 'new'    -> fresh run, orchestrator on `model` (haiku|sonnet|opus|fable|auto), optional first task
 //   action 'resume' -> run `runId` in that folder, or its latest when omitted
-function startFromLauncher({ dir, model, effort, action = 'new', runId: pickRun, task: firstTask } = {}) {
+// budget: cap for this run; on resume it only overrides the saved one when given
+function startFromLauncher({ dir, model, effort, budget: pickBudget, action = 'new', runId: pickRun, task: firstTask } = {}) {
   const nextCwd = normDir(dir || cwd);
   let manifest = null, resumeId = null;
   if (action === 'resume') {
     const runsDir = join(nextCwd, '.skylla', 'runs');
-    const runs = existsSync(runsDir) ? readdirSync(runsDir).filter(d => existsSync(join(runsDir, d, 'manifest.json'))).sort() : [];
-    resumeId = pickRun && runs.includes(pickRun) ? pickRun : runs.at(-1);
+    const runs = listRuns(runsDir).map(r => r.id);
+    resumeId = pickRun && runs.includes(pickRun) ? pickRun : runs[0]; // default: most recently active
     if (!resumeId) return { ok: false, text: 'no runs to resume in this folder' };
     try { manifest = JSON.parse(readFileSync(join(runsDir, resumeId, 'manifest.json'), 'utf8')); }
     catch { return { ok: false, text: `run ${resumeId} has an unreadable manifest` }; }
@@ -916,6 +901,7 @@ function startFromLauncher({ dir, model, effort, action = 'new', runId: pickRun,
   state.pendingPlan = null;
   state.planApproved = false;
   state.shellLog = [];
+  state.title = null;
   cwd = nextCwd;
   state.cwd = cwd;
   state.layout = null;
@@ -924,10 +910,12 @@ function startFromLauncher({ dir, model, effort, action = 'new', runId: pickRun,
   if (manifest) {
     runId = resumeId;
     runDir = join(cwd, '.skylla', 'runs', runId);
-    if (!budgetFromArgs) state.budget = manifest.budget ?? state.budget;
+    if (pickBudget != null) state.budget = pickBudget;
+    else if (!budgetFromArgs) state.budget = manifest.budget ?? state.budget;
     state.perWorkerBudget = state.budget / 2;
   } else {
     if (model) { orchModel = model; orchRung = 0; }
+    if (pickBudget != null) { state.budget = pickBudget; state.perWorkerBudget = pickBudget / 2; }
     runId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     runDir = join(cwd, '.skylla', 'runs', runId);
   }
@@ -947,12 +935,14 @@ function startFromLauncher({ dir, model, effort, action = 'new', runId: pickRun,
 }
 
 function startOrchestrator(effort) {
+  if (task && !state.title) state.title = task.trim().split('\n')[0].slice(0, 140);
   const o = buildOrchestrator(MODEL_ALIASES[currentOrchModel()] ?? currentOrchModel());
   if (effort) o.effort = effort;
   o.start(task ?? 'No initial task given. Greet the user briefly and wait for instructions.');
 }
 
 function resumeRun(m) {
+  state.title = m.title ?? null;
   if (!permModeFromArgs && m.permMode) permMode = state.permMode = m.permMode;
   // restore the auto-ladder rung from the model the orchestrator had reached
   if (orchModel === 'auto' && m.orchestrator?.model) {
