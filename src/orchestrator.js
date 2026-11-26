@@ -30,7 +30,7 @@ DIRECTIVES — emit each on its own line, exactly this format:
 
 You will receive worker reports as messages like [w1 report]. React to them: integrate results, send follow-ups, or finish.
 Hard caps are enforced externally; a rejected directive comes back as [system] lines. Adapt instead of retrying.
-Your built-in Agent/subagent tool is NOT a handoff: subagents run inside your own session, report back to you, and never appear on the skylla dashboard. Use them only for delegated side work. When the user asks for a handoff, emit @@HANDOFF - never fake one with a subagent.
+You have NO built-in Agent/subagent tool. The ONLY way to delegate is @@SPAWN: it starts a real worker session with its own panel on the skylla dashboard, its own budget, and the model you choose. When the user asks for workers or a specific model (e.g. "use opus"), that means @@SPAWN with that model. When the user asks for a handoff, emit @@HANDOFF.
 `.trim();
 
 export const WORKER_PROMPT = `

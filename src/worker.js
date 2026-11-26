@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { contextLimitFor } from './pricing.js';
-import { resolveClaudeCli } from './claude-bin.js';
+import { resolveClaudeCommand } from './claude-bin.js';
 
-const CLAUDE_CLI = resolveClaudeCli();
+const CLAUDE = resolveClaudeCommand();
 
 // Panel colors cycle; a worker keeps its color across recycles (continuity).
 export const COLORS = ['cyan', 'green', 'yellow', 'magenta', 'blue', 'red'];
@@ -12,8 +15,9 @@ export const COLORS = ['cyan', 'green', 'yellow', 'magenta', 'blue', 'red'];
 let nextWorkerNum = 1;
 
 export class Worker extends EventEmitter {
-  constructor({ name, model, cwd, color, systemPrompt, permissionMode, settingsFile }) {
+  constructor({ name, model, cwd, color, systemPrompt, permissionMode, settingsFile, disallowedTools }) {
     super();
+    this.disallowedTools = disallowedTools ?? []; // e.g. the orchestrator: no built-in subagents
     this.permissionMode = permissionMode ?? 'acceptEdits'; // requested mode
     this.effectiveMode = null;  // what the CLI actually runs (auto can be refused per model)
     this.settingsFile = settingsFile;
@@ -88,14 +92,27 @@ export class Worker extends EventEmitter {
     ];
     if (this.model) args.push('--model', this.model);
     if (this.effort) args.push('--effort', this.effort);
-    if (this.systemPrompt) args.push('--append-system-prompt', this.systemPrompt);
+    if (this.disallowedTools.length) args.push('--disallowedTools', this.disallowedTools.join(','));
     if (this.settingsFile) args.push('--settings', this.settingsFile); // mechanical guards (deny rules)
 
     const env = { ...process.env };
     delete env.CLAUDECODE; // allow spawning workers even when skylla itself was started from inside a Claude Code session
-    this.proc = CLAUDE_CLI
-      ? spawn(process.execPath, [CLAUDE_CLI, ...args], { cwd: this.cwd, windowsHide: true, env })
-      : spawn('claude', args.map(a => `"${a}"`), { cwd: this.cwd, shell: true, windowsHide: true, env });
+    if (CLAUDE) {
+      // direct spawn: argv is passed exactly, multi-line prompts included
+      if (this.systemPrompt) args.push('--append-system-prompt', this.systemPrompt);
+      this.proc = spawn(CLAUDE.cmd, [...CLAUDE.pre, ...args], { cwd: this.cwd, windowsHide: true, env });
+    } else {
+      // shell fallback: cmd.exe cuts arguments at the first newline, so the
+      // system prompt goes in a file and every remaining arg is single-line
+      if (this.systemPrompt) {
+        const dir = join(tmpdir(), 'skylla-prompts');
+        mkdirSync(dir, { recursive: true });
+        const file = join(dir, `${this.name}-${process.pid}.md`);
+        writeFileSync(file, this.systemPrompt);
+        args.push('--append-system-prompt-file', file);
+      }
+      this.proc = spawn('claude', args.map(a => `"${a}"`), { cwd: this.cwd, shell: true, windowsHide: true, env });
+    }
     this.proc.stdout.on('data', d => this.onData(d));
     this.proc.stderr.on('data', d => this.pushLine(String(d).trim()));
     this.effectiveMode = 'acceptEdits';
