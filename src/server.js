@@ -43,6 +43,7 @@ function snapshot(state) {
     maxWorkers: state.maxWorkers,
     cwd: state.cwd,
     permMode: state.permMode ?? 'acceptEdits',
+    launcher: !!state.launcher,
     layout: state.layout ?? null,
     planUsage: state.planUsage ?? null,
     pendingPlan: state.pendingPlan ?? null,
@@ -52,7 +53,7 @@ function snapshot(state) {
   };
 }
 
-export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, onDiff, onMerge, onDiscard, onTranscript, onListRuns, onRemote, onTrust, isTrusted, host = '127.0.0.1', port = 0, token = null }) {
+export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, onDiff, onMerge, onDiscard, onTranscript, onListRuns, onRemote, onTrust, isTrusted, onStart, host = '127.0.0.1', port = 0, token = null }) {
   const htmlPath = join(dirname(fileURLToPath(import.meta.url)), 'web', 'index.html');
   const clients = new Set();
 
@@ -123,6 +124,24 @@ export function startServer({ state, onInput, onOpenFolder, onUpload, onLayout, 
       req.on('end', () => {
         let out = { trusted: false };
         try { out = onTrust?.(String(JSON.parse(body).dir ?? '')) ?? out; } catch { /* unreadable config */ }
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
+      });
+    } else if (u.pathname === '/start' && req.method === 'POST') {
+      // start screen: new run or resume, in this or another folder
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        let out = { ok: false, text: 'bad request' };
+        try {
+          const { dir, model, action, runId, task } = JSON.parse(body);
+          out = onStart?.({
+            dir: dir ? String(dir) : null,
+            model: ['haiku', 'sonnet', 'opus', 'fable', 'auto'].includes(model) ? model : null,
+            action: action === 'resume' ? 'resume' : 'new',
+            runId: runId ? String(runId) : null,
+            task: task ? String(task) : null,
+          }) ?? { ok: false, text: 'unavailable' };
+        } catch (e) { out = { ok: false, text: String(e.message ?? e) }; }
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
       });
     } else if (u.pathname === '/runs') {

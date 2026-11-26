@@ -64,6 +64,9 @@ if (task === 'runs') {
 }
 
 let runId, runDir, loadedManifest = null;
+// no task and no "resume": show the start screen instead of spending on a fresh orchestrator
+// (the terminal UI has no start screen, so --tui keeps the old behaviour)
+const startIdle = !resumeMode && !task && !useTui;
 if (resumeMode) {
   const runsDir = join(cwd, '.skylla', 'runs');
   const runs = existsSync(runsDir)
@@ -81,7 +84,7 @@ if (resumeMode) {
   runId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   runDir = join(cwd, '.skylla', 'runs', runId);
 }
-mkdirSync(join(runDir, 'handoffs'), { recursive: true });
+if (!startIdle) mkdirSync(join(runDir, 'handoffs'), { recursive: true });
 
 // mechanical guards for workers: destructive git ops are denied in code, not prompts
 let guardsFile;
@@ -97,11 +100,12 @@ function writeGuards() {
     },
   }));
 }
-writeGuards();
+if (!startIdle) writeGuards();
 
 const state = {
   cwd, runDir,
   permMode,
+  launcher: startIdle, // true = start screen shown, no sessions running
   orchestrator: null,
   workers: [],
   retired: [],   // killed workers: panel removed, cost + manifest record kept
@@ -143,6 +147,7 @@ const totalCost = () =>
   (state.orchestrator?.cost ?? 0);
 
 function saveManifest() {
+  if (state.launcher) return; // nothing started yet: don't create an empty "run"
   bumpWeekly(totalCost());
   writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
     runId, cwd, budget: state.budget, permMode, totalCost: totalCost(),
@@ -189,9 +194,10 @@ if (useTui) {
     port,
     token,
     onInput: handleUserInput,
+    onStart: opts => startFromLauncher(opts),
     // "open folder": new window = fresh skylla instance; current = repoint this one
     onOpenFolder: ({ dir, model, mode, runId }) => {
-      if (mode === 'current') return openHere(dir, model);
+      if (mode === 'current') return startFromLauncher({ dir, model, action: 'new' });
       if (mode === 'resume' && existsSync(join(resolve(dir), '.skylla', 'runs'))) {
         // resume a run (specific or latest) in a new window via the CLI resume path
         const args = [fileURLToPath(import.meta.url), '-C', dir, '--mode', permMode, 'resume'];
@@ -339,6 +345,11 @@ function sysToOrch(text) {
 function handleUserInput(text) {
   text = text.trim();
   if (!text) return;
+  if (state.launcher) {
+    const pm = text.match(/^\/mode\s+(\S+)\s*$/); // mode can be picked before starting
+    if (pm && PERM_MODES[pm[1].toLowerCase()]) { permMode = state.permMode = PERM_MODES[pm[1].toLowerCase()]; return rerender(); }
+    return;
+  }
   let target = state.orchestrator;
   const m = text.match(/^@(\S+)\s+([\s\S]+)/);
   if (m) {
@@ -788,26 +799,57 @@ function buildOrchestrator(model) {
   return o;
 }
 
-// Reuse this window/process for a different project: tear down the run, start fresh.
-function openHere(dir, model) {
+// Start screen / Open Folder "this window": tear down whatever runs here, then
+// either start a new run (model of choice) or resume one, in any folder.
+//   action 'new'    -> fresh run, orchestrator on `model` (haiku|sonnet|opus|fable|auto), optional first task
+//   action 'resume' -> run `runId` in that folder, or its latest when omitted
+function startFromLauncher({ dir, model, action = 'new', runId: pickRun, task: firstTask } = {}) {
+  const nextCwd = normDir(dir || cwd);
+  let manifest = null, resumeId = null;
+  if (action === 'resume') {
+    const runsDir = join(nextCwd, '.skylla', 'runs');
+    const runs = existsSync(runsDir) ? readdirSync(runsDir).filter(d => existsSync(join(runsDir, d, 'manifest.json'))).sort() : [];
+    resumeId = pickRun && runs.includes(pickRun) ? pickRun : runs.at(-1);
+    if (!resumeId) return { ok: false, text: 'no runs to resume in this folder' };
+    try { manifest = JSON.parse(readFileSync(join(runsDir, resumeId, 'manifest.json'), 'utf8')); }
+    catch { return { ok: false, text: `run ${resumeId} has an unreadable manifest` }; }
+  }
+
   for (const w of [state.orchestrator, ...state.workers]) w?.kill();
   state.workers = [];
   state.retired = [];
   state.orchestrator = null;
   state.done = false;
-  cwd = normDir(dir);
+  state.pendingPlan = null;
+  state.planApproved = false;
+  state.shellLog = [];
+  cwd = nextCwd;
   state.cwd = cwd;
   state.layout = null;
   try { state.layout = JSON.parse(readFileSync(layoutFile(), 'utf8')); } catch { /* none yet */ }
-  if (model) { orchModel = model; orchRung = 0; }
-  runId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  runDir = join(cwd, '.skylla', 'runs', runId);
+
+  if (manifest) {
+    runId = resumeId;
+    runDir = join(cwd, '.skylla', 'runs', runId);
+    state.budget = manifest.budget ?? state.budget;
+  } else {
+    if (model) { orchModel = model; orchRung = 0; }
+    runId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    runDir = join(cwd, '.skylla', 'runs', runId);
+  }
   state.runDir = runDir;
   mkdirSync(join(runDir, 'handoffs'), { recursive: true });
   writeGuards();
-  lastTotalForWeekly = 0; // new run starts from zero spend
-  task = null;
-  startOrchestrator();
+  state.launcher = false;
+  if (manifest) {
+    resumeRun(manifest);
+  } else {
+    lastTotalForWeekly = 0; // new run starts from zero spend
+    task = firstTask?.trim() || null;
+    startOrchestrator();
+  }
+  rerender();
+  return { ok: true };
 }
 
 function startOrchestrator() {
@@ -849,4 +891,6 @@ function resumeRun(m) {
   }
 }
 
-loadedManifest ? resumeRun(loadedManifest) : startOrchestrator();
+if (loadedManifest) resumeRun(loadedManifest);
+else if (!startIdle) startOrchestrator();
+// else: start screen - the UI calls startFromLauncher()

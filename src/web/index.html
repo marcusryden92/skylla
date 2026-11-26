@@ -434,6 +434,28 @@
   }
   .cmdargs { color: var(--dim); }
 
+  /* --- start screen: shown on a blank launch, nothing runs until you pick --- */
+  #launcher { flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; align-items: flex-start; padding: 6vh 16px 16px; }
+  #launcher[hidden] { display: none; }
+  .lcard { width: min(640px, 100%); display: flex; flex-direction: column; gap: 18px; }
+  .lhead { display: flex; align-items: center; gap: 12px; font-size: 20px; letter-spacing: 3px; color: var(--accent); font-weight: 700; }
+  .lhead svg { width: 40px; height: 40px; }
+  .lbox { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .lsec { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+  .lfolder { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .lfolder #l-dir { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lbtn { background: #21262d; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: inherit; font-size: 13px; padding: 6px 14px; cursor: pointer; }
+  .lbtn:hover { border-color: #58a6ff; }
+  .lbtn.primary { border-color: #4ade80; color: #4ade80; font-weight: 700; }
+  .lmodels { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .lmodels .lbtn.sel { border-color: #58a6ff; background: #1f2d3d; color: #58a6ff; font-weight: 700; }
+  .lmodels .spacer { flex: 1; }
+  .lhint { color: var(--dim); font-size: 12px; }
+  .lruns { display: flex; flex-direction: column; gap: 4px; max-height: 40vh; overflow-y: auto; }
+  .lrun { display: grid; grid-template-columns: 1fr auto auto auto; gap: 14px; align-items: center; padding: 7px 10px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
+  .lrun:hover { border-color: #58a6ff; background: #1c2128; }
+  .lrun .latest { color: #4ade80; font-size: 11px; margin-left: 8px; }
+
   /* --- status bar + input --- */
   #statusbar {
     flex: none;
@@ -564,6 +586,39 @@
       <option value="bypassPermissions">bypass</option>
     </select>
     <span class="cwd" id="cwd"></span>
+  </div>
+  <div id="launcher" hidden>
+    <div class="lcard">
+      <div class="lhead">
+        <svg viewBox="0 0 1000 1000" fill="none" aria-hidden="true">
+          <circle cx="500" cy="500" r="500" fill="#161616"/>
+          <path d="M498.255 499.564C498.546 458.711 560.127 377.004 802.382 377.004" stroke-width="40" stroke="#6E6E6E"/>
+          <path d="M498.255 499.564C498.691 426.581 560.547 289.808 803.5 289.808" stroke-width="40" stroke="#919191"/>
+          <path d="M804.127 196C804.127 196 498.255 196 498.255 500.436C498.255 804.872 195 804 195 804" stroke-width="40" stroke="#F4F4F4"/>
+        </svg>
+        SKYLLA
+      </div>
+      <div class="lbox">
+        <div class="lsec">Folder</div>
+        <div class="lfolder"><span id="l-dir"></span><button class="lbtn" id="l-pick" hidden>Change…</button></div>
+      </div>
+      <div class="lbox">
+        <div class="lsec">Start a new run</div>
+        <div class="lmodels" id="l-models">
+          <button class="lbtn" data-m="sonnet">sonnet</button>
+          <button class="lbtn" data-m="opus">opus</button>
+          <button class="lbtn" data-m="fable">fable</button>
+          <button class="lbtn" data-m="auto" title="starts on sonnet, climbs to opus/fable only when the orchestrator escalates">auto</button>
+          <span class="spacer"></span>
+          <button class="lbtn primary" id="l-start">Start</button>
+        </div>
+        <div class="lhint">Or type your first task below and press Enter.</div>
+      </div>
+      <div class="lbox">
+        <div class="lsec">Resume a previous run in this folder</div>
+        <div class="lruns" id="l-runs"></div>
+      </div>
+    </div>
   </div>
   <div id="grid" class="none"><div id="drophint" hidden></div></div>
   <div id="planbar" hidden>
@@ -1084,6 +1139,7 @@ function render(s) {
   document.getElementById('flag-done').style.display = s.done ? '' : 'none';
   document.getElementById('cwd').textContent = s.cwd ?? '';
   if (s.cwd && s.cwd !== trustCheckedCwd) { trustCheckedCwd = s.cwd; ensureTrust(s.cwd); }
+  renderLauncher(s);
   const pu = s.planUsage;
   const planWrap = document.getElementById('s-plan-wrap');
   planWrap.hidden = !pu;
@@ -1234,7 +1290,8 @@ input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault(); // Shift+Enter inserts a newline instead
     if (!input.value.trim()) return;
-    fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: input.value }) });
+    if (lastState?.launcher) launch({ action: 'new', task: input.value });
+    else fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: input.value }) });
     input.value = '';
     updateMirror();
     suggest.style.display = 'none';
@@ -1274,6 +1331,82 @@ Claude will apply its .claude settings (permission rules, hooks, MCP servers). O
     if (!r.trusted) alert('Could not record trust in ~/.claude.json.');
     return r.trusted;
   } catch { return false; }
+}
+
+// --- start screen ---
+const launcherEl = document.getElementById('launcher');
+const CHAT_PLACEHOLDER = 'message the orchestrator — prefix @w1 or @<session-id> to target a worker · Shift+Enter for a new line';
+let launcherDir = null;
+let launcherModel = 'sonnet';
+try { launcherModel = localStorage.getItem('skylla.launcherModel') || 'sonnet'; } catch { /* no storage */ }
+function setLauncherModel(m) {
+  launcherModel = m;
+  try { localStorage.setItem('skylla.launcherModel', m); } catch { /* no storage */ }
+  for (const b of document.querySelectorAll('#l-models [data-m]')) b.classList.toggle('sel', b.dataset.m === m);
+  if (lastState?.launcher) input.placeholder = 'type your first task and press Enter to start a new run on ' + m;
+}
+for (const b of document.querySelectorAll('#l-models [data-m]')) b.addEventListener('click', () => setLauncherModel(b.dataset.m));
+
+// "2026-11-25T21-23-24" (UTC) -> local "25 Nov 2026, 22:23"
+function runWhen(id) {
+  const m = id.match(/^(\d{4})-(\d\d)-(\d\d)T(\d\d)-(\d\d)/);
+  if (!m) return id;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]));
+  return d.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+async function loadLauncherRuns() {
+  const list = document.getElementById('l-runs');
+  document.getElementById('l-dir').textContent = launcherDir;
+  list.innerHTML = '<div class="lhint">loading…</div>';
+  let runs = [];
+  try { runs = await (await fetch(api('/runs?dir=' + encodeURIComponent(launcherDir)))).json(); } catch { /* offline */ }
+  if (!runs.length) { list.innerHTML = '<div class="lhint">No previous runs in this folder.</div>'; return; }
+  list.innerHTML = runs.map((r, i) =>
+    '<div class="lrun" data-id="' + esc(r.id) + '" title="resume this run">'
+    + '<span>' + esc(runWhen(r.id)) + (i === 0 ? '<span class="latest">latest</span>' : '') + '</span>'
+    + '<span class="dim">' + esc(String(r.orch).replace('claude-', '').replace(/-[0-9].*$/, '')) + '</span>'
+    + '<span class="dim">' + r.workers + ' worker' + (r.workers === 1 ? '' : 's') + '</span>'
+    + '<span class="dim">' + (r.cost ?? 0).toFixed(2) + 'eq</span>'
+    + '</div>').join('');
+  for (const row of list.querySelectorAll('.lrun')) row.addEventListener('click', () => launch({ action: 'resume', runId: row.dataset.id }));
+}
+
+async function launch(opts) {
+  try {
+    const r = await (await fetch(api('/start'), { method: 'POST', body: JSON.stringify({ dir: launcherDir, model: launcherModel, ...opts }) })).json();
+    if (!r.ok) alert(r.text ?? 'could not start');
+  } catch { alert('could not reach skylla'); }
+}
+document.getElementById('l-start').addEventListener('click', () => launch({ action: 'new' }));
+if (window.skylla) {
+  const pickBtn = document.getElementById('l-pick');
+  pickBtn.hidden = false;
+  pickBtn.addEventListener('click', async () => {
+    const dir = await window.skylla.pickFolder();
+    if (!dir) return;
+    await ensureTrust(dir);
+    launcherDir = dir;
+    loadLauncherRuns();
+  });
+}
+
+let launcherShown = false;
+function renderLauncher(s) {
+  launcherEl.hidden = !s.launcher;
+  // titlebar controls that only make sense with a run going
+  for (const id of ['orch-model', 'shell-btn', 'resume-btn']) document.getElementById(id).style.display = s.launcher ? 'none' : '';
+  document.querySelector('#titlebar .lbl').style.display = s.launcher ? 'none' : '';
+  if (s.launcher && !launcherShown) {
+    launcherDir = launcherDir ?? s.cwd;
+    setLauncherModel(launcherModel);
+    loadLauncherRuns();
+  }
+  if (!s.launcher && launcherShown) {
+    input.placeholder = CHAT_PLACEHOLDER;
+    launcherDir = null;
+  }
+  launcherShown = s.launcher;
 }
 
 // Open Folder: Electron-only (needs the native directory picker).
