@@ -1167,19 +1167,7 @@ function render(s) {
   if (s.cwd && s.cwd !== trustCheckedCwd) { trustCheckedCwd = s.cwd; ensureTrust(s.cwd); }
   renderLauncher(s);
   if (typeof updateModelBtn === 'function') updateModelBtn();
-  const pu = s.planUsage;
-  const planWrap = document.getElementById('s-plan-wrap');
-  planWrap.hidden = !pu;
-  if (pu) {
-    const parts = [];
-    if (pu.session != null) parts.push(`session ${pu.session}%`);
-    if (pu.weekly != null) parts.push(`week ${pu.weekly}%`);
-    for (const sc of pu.scoped ?? []) parts.push(`${sc.name} ${sc.percent}%`);
-    const el = document.getElementById('s-plan');
-    el.textContent = parts.join(' · ');
-    const worst = Math.max(pu.session ?? 0, pu.weekly ?? 0, ...(pu.scoped ?? []).map(x => x.percent));
-    el.style.color = worst >= 90 ? '#f87171' : worst >= 70 ? '#facc15' : '';
-  }
+  renderPlanUsage(s.planUsage);
   qrBtn.hidden = !s.remoteUrl;
   remoteBtn.hidden = !!s.remoteUrl;
   const modeSel = document.getElementById('perm-mode');
@@ -1189,6 +1177,44 @@ function render(s) {
   if (document.activeElement !== sel && s.orchestrator?.label && sel.querySelector(`option[value="${s.orchestrator.label}"]`)) {
     sel.value = s.orchestrator.label;
   }
+}
+
+// plan meter: always visible; says how fresh each number is
+function ago(t) {
+  const m = Math.round((Date.now() - t) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? m + 'm ago' : Math.round(m / 60) + 'h ago';
+}
+function renderPlanUsage(pu) {
+  const wrap = document.getElementById('s-plan-wrap');
+  const el = document.getElementById('s-plan');
+  wrap.hidden = false;
+  if (!pu || (pu.session == null && pu.weekly == null && !(pu.scoped ?? []).length)) {
+    el.textContent = '—';
+    el.style.color = '';
+    wrap.title = 'No usage data yet: it arrives with the first API call of any session.';
+    return;
+  }
+  // each source gets its own age in whole minutes since it was fetched: "(3m)"
+  const mins = t => t ? ' (' + Math.floor((Date.now() - t) / 60000) + 'm)' : '';
+  const mainAt = pu.liveAt ?? pu.endpointAt ?? null;
+  const stale = !mainAt || Date.now() - mainAt > 10 * 60000;
+  const main = [];
+  if (pu.session != null) main.push('session ' + pu.session + '%');
+  if (pu.weekly != null) main.push('week ' + pu.weekly + '%');
+  const parts = main.length ? [main.join(' · ') + mins(mainAt)] : [];
+  const scoped = (pu.scoped ?? []).map(sc => sc.name + ' ' + sc.percent + '%');
+  if (scoped.length) parts.push(scoped.join(' · ') + mins(pu.scopedAt));
+  el.textContent = parts.join(' · ');
+  const worst = Math.max(pu.session ?? 0, pu.weekly ?? 0, ...(pu.scoped ?? []).map(x => x.percent));
+  el.style.color = pu.status === 'rejected' || worst >= 90 ? '#f87171' : pu.status === 'allowed_warning' || worst >= 70 ? '#facc15' : '';
+  el.style.opacity = stale ? '.6' : '';
+  const t = ts => new Date(ts).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  wrap.title = [
+    mainAt ? 'session/week updated ' + ago(mainAt) + (pu.liveAt ? ' (live, from your sessions)' : ' (usage endpoint)') : null,
+    pu.sessionResetsAt ? 'session resets ' + t(pu.sessionResetsAt) : null,
+    pu.weeklyResetsAt ? 'week resets ' + t(pu.weeklyResetsAt) : null,
+    pu.scopedAt ? 'per-model meters updated ' + ago(pu.scopedAt) : null,
+  ].filter(Boolean).join('\n');
 }
 
 // shared shell console tile
@@ -1316,7 +1342,15 @@ input.addEventListener('keydown', e => {
   if (e.key === 'Escape') { suggest.style.display = 'none'; sugItems = []; return; }
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault(); // Shift+Enter inserts a newline instead
-    if (!input.value.trim()) return;
+    if (/^\s*(@\S+\s*)?$/.test(input.value)) { // nothing typed: Enter = Allow
+      const w = permTarget();
+      if (w) {
+        fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: '@' + w.name + ' /allow' }) });
+        input.value = '';
+        updateMirror();
+      }
+      return;
+    }
     if (lastState?.launcher) launch({ action: 'new', task: input.value });
     else fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: input.value }) });
     input.value = '';
@@ -1721,7 +1755,29 @@ function switchTarget() {
   return lastState?.orchestrator ?? null;
 }
 
+// Which pending permission prompt Enter would answer: the @target's, else the first panel's.
+function permTarget() {
+  if (!lastState || lastState.launcher) return null;
+  const all = [...(lastState.orchestrator ? [lastState.orchestrator] : []), ...lastState.workers];
+  if (/^@\S+/.test(input.value)) { const t = switchTarget(); return t?.perm ? t : null; } // explicit target: only that one
+  return all.find(w => w.perm) ?? null;
+}
+
+// '{"command":"npm test"}' -> 'npm test' (detail is a truncated JSON dump)
+function permDetail(d) {
+  const m = String(d).match(/"(?:command|file_path|url|pattern)":"((?:[^"\\]|\\.)*)/);
+  return (m ? m[1].replace(/\\"/g, '"') : String(d)).replace(/\s+/g, ' ');
+}
+
+function updatePermHint() {
+  if (!lastState || lastState.launcher) return;
+  const w = permTarget();
+  const hint = w ? 'Enter to allow ' + w.name + ': [' + w.perm.tool + '] ' + permDetail(w.perm.detail).slice(0, 80) : CHAT_PLACEHOLDER;
+  if (input.placeholder !== hint) input.placeholder = hint;
+}
+
 function updateModelBtn() {
+  updatePermHint();
   let label;
   if (lastState?.launcher) label = launcherModel + (launcherEffort ? ' · ' + launcherEffort : '');
   else {
