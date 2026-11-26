@@ -720,7 +720,7 @@
     <span id="s-plan-wrap" hidden>plan <b id="s-plan"></b></span>
     <span>burn <b id="s-burn">0.00</b>/min</span>
     <span>workers <b id="s-workers">0/0</b></span>
-    <span>cap <b id="s-cap">0</b>eq</span>
+    <span id="s-cap-wrap" title="run budget cap: click to change (or /budget 30, /budget +10)" style="cursor:pointer">cap <b id="s-cap">0</b>eq</span>
     <span id="flag-budget">!! NEAR BUDGET !!</span>
     <span id="flag-done">DONE</span>
     <span id="flag-offline">DISCONNECTED</span>
@@ -1216,6 +1216,16 @@ function renderPlanUsage(pu) {
     pu.scopedAt ? 'per-model meters updated ' + ago(pu.scopedAt) : null,
   ].filter(Boolean).join('\n');
 }
+
+// click the cap to raise/lower the run budget
+document.getElementById('s-cap-wrap').addEventListener('click', () => {
+  const cur = lastState?.budget ?? 0;
+  const v = prompt('Run budget cap (eq). Spent so far: ' + (document.getElementById('s-run')?.textContent ?? '?') + 'eq', String(cur));
+  if (v == null) return;
+  const n = parseFloat(v);
+  if (!(n >= 0)) return alert('Not a number: ' + v);
+  fetch(api('/send'), { method: 'POST', body: JSON.stringify({ text: '/budget ' + n }) });
+});
 
 // shared shell console tile
 function renderShell(p, s) {

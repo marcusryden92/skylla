@@ -15,6 +15,7 @@ const argv = process.argv.slice(2);
 let cwd = normDir(process.cwd());
 let task = null;
 let budget = 10.0;
+let budgetFromArgs = false;
 let orchModel = 'auto';   // auto = escalation ladder; or pin with --orch-model
 const ORCH_LADDER = ['sonnet', 'opus', 'fable'];
 let orchRung = 0;
@@ -31,7 +32,7 @@ let permMode = 'acceptEdits';
 let permModeFromArgs = false;
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '-C') cwd = normDir(argv[++i]);
-  else if (argv[i] === '--budget') budget = parseFloat(argv[++i]);
+  else if (argv[i] === '--budget') { budget = parseFloat(argv[++i]); budgetFromArgs = true; }
   else if (argv[i] === '--orch-model') orchModel = argv[++i];
   else if (argv[i] === '--recycle-at') recycleAt = parseInt(argv[++i], 10);
   else if (argv[i] === '--tui') useTui = true;
@@ -79,7 +80,7 @@ if (resumeMode) {
   }
   runDir = join(runsDir, runId);
   loadedManifest = JSON.parse(readFileSync(join(runDir, 'manifest.json'), 'utf8'));
-  budget = loadedManifest.budget ?? budget;
+  if (!budgetFromArgs) budget = loadedManifest.budget ?? budget;
 } else {
   runId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   runDir = join(cwd, '.skylla', 'runs', runId);
@@ -365,6 +366,20 @@ refreshPlanUsage();
 
 const git = args => execFileSync('git', args, { cwd, stdio: 'pipe', maxBuffer: 16 * 1024 * 1024 }).toString();
 
+function setBudget(n) {
+  const old = state.budget;
+  state.budget = Math.max(0, Math.round(n * 100) / 100);
+  state.perWorkerBudget = state.budget / 2;
+  const o = state.orchestrator;
+  if (o) {
+    o.systemPrompt = orchSysPrompt(o.model); // caps line for the next launch
+    o.pushLine(`[skylla] budget ${old}eq -> ${state.budget}eq (spent ${totalCost().toFixed(2)}eq)`);
+    if (state.budget > old && !state.launcher)
+      sysToOrch(`The user raised the global budget to $${state.budget} (per-worker $${state.perWorkerBudget}; spent so far $${totalCost().toFixed(2)}). Spawns are possible again - re-emit any rejected @@SPAWN that is still needed.`);
+  }
+  saveManifest();
+}
+
 // One mode for the whole run: live sessions switch now, later launches inherit it.
 function setPermMode(mode) {
   permMode = state.permMode = mode;
@@ -426,6 +441,15 @@ function handleUserInput(text) {
   if (perm) {
     if (!target.permRequests?.length) target.pushLine('[skylla] no permission request pending');
     else target.respondPermission(perm[1] === 'allow');
+    return rerender();
+  }
+  const bm = text.match(/^\/budget(?:\s+(\+)?(\d+(?:\.\d+)?))?\s*$/);
+  if (bm) {
+    if (!bm[2]) {
+      state.orchestrator?.pushLine(`[skylla] budget ${state.budget}eq, spent ${totalCost().toFixed(2)}eq. Use /budget 30 or /budget +10`);
+      return rerender();
+    }
+    setBudget(bm[1] ? state.budget + parseFloat(bm[2]) : parseFloat(bm[2]));
     return rerender();
   }
   const ef = text.match(/^\/effort(?:\s+(\S+))?\s*$/);
@@ -791,6 +815,9 @@ function buildOrchestrator(model) {
     color: 'white',
     systemPrompt: orchSysPrompt(model),
     permissionMode: permMode,
+    // delegation must go through @@SPAWN so workers are real, visible, budgeted
+    // sessions - built-in subagents would hide inside the orchestrator's session
+    disallowedTools: ['Agent', 'Task'],
   });
   o.on('update', rerender);
   o.on('ratelimit', applyRateLimit);
@@ -897,7 +924,8 @@ function startFromLauncher({ dir, model, effort, action = 'new', runId: pickRun,
   if (manifest) {
     runId = resumeId;
     runDir = join(cwd, '.skylla', 'runs', runId);
-    state.budget = manifest.budget ?? state.budget;
+    if (!budgetFromArgs) state.budget = manifest.budget ?? state.budget;
+    state.perWorkerBudget = state.budget / 2;
   } else {
     if (model) { orchModel = model; orchRung = 0; }
     runId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
